@@ -42,6 +42,12 @@ void*     lcdScratch(size_t bytes);
     його треба намалювати ЦІЛКОМ, і lcdEnd нічого не виводить; потім lcdSlideRun:
     dir 1 — новий в'їжджає справа, -1 — зліва; ms — тривалість. Після нього на
     екрані й у кадрі — другий лист. false — плата так не вміє (ES3C28P).  */
+/*  Кадр у пам'яті (ES3C35P): малювати смугу прямо в нього, без lcdPush. Повертає
+    адресу точки (x, y) у кадрі (крок рядка — lcdFrameStride()) або nullptr, якщо плата
+    так не вміє (ES3C28P). Після малювання — lcdMarked(), щоб частина пішла в панель.  */
+uint16_t* lcdFrameFor(int16_t x, int16_t y);
+int16_t   lcdFrameStride();
+void      lcdMarked(int16_t x, int16_t y, int16_t w, int16_t h);
 bool      lcdSlideBegin();
 void      lcdSlideRun(int8_t dir, uint32_t ms);
 /*  Скільки рядків ширини w уміщує буфер на px пікселів — з урахуванням кратності.  */

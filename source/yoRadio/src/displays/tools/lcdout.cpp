@@ -37,7 +37,10 @@ void lcdEnd(){
 }
 
 void* lcdScratch(size_t bytes){ return spidmaScratch(bytes); }
-/*  ES3C28P: кадру в пам'яті немає — перехід малює саме меню, як і раніше.  */
+/*  ES3C28P: кадру в пам'яті немає — смуги йдуть у дисплей, перехід малює саме меню.  */
+uint16_t* lcdFrameFor(int16_t x, int16_t y){ (void)x; (void)y; return nullptr; }
+int16_t   lcdFrameStride(){ return 0; }
+void      lcdMarked(int16_t x, int16_t y, int16_t w, int16_t h){ (void)x; (void)y; (void)w; (void)h; }
 bool lcdSlideBegin(){ return false; }
 void lcdSlideRun(int8_t dir, uint32_t ms){ (void)dir; (void)ms; }
 #endif

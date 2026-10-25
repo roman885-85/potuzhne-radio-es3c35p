@@ -63,6 +63,7 @@ class YoLogos {
 extern YoLogos logos;
 
 /*  Розпакувати зображення (PNG / ICO / JPEG) у W x H RGB565, прозоре — на білому.  */
-bool yoImageFit(const uint8_t* data, size_t len, uint16_t* out, int W, int H);
+/*  crop > 0 — вирізати з середини прямокутник з пропорцією crop (банер og:image).  */
+bool yoImageFit(const uint8_t* data, size_t len, uint16_t* out, int W, int H, float crop = 0);
 
 #endif

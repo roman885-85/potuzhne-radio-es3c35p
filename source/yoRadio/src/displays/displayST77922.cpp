@@ -653,6 +653,18 @@ void  lcdBegin(){}
 void  lcdWait(){}                 /* смуги копіюються в кадр одразу — чекати нічого */
 void  lcdEnd(){ present(); }
 
+/*  Малювати прямо в кадр (або в лист переходу) — без копії смуги.  */
+uint16_t* lcdFrameFor(int16_t x, int16_t y){
+  uint16_t* fb = s_tgt ? s_tgt : s_fb;
+  if(!fb || x < 0 || y < 0 || x >= DSP_W || y >= DSP_H) return nullptr;
+  return fb + (int32_t)y * DSP_W + x;
+}
+int16_t lcdFrameStride(){ return DSP_W; }
+void lcdMarked(int16_t x, int16_t y, int16_t w, int16_t h){
+  if(w <= 0 || h <= 0) return;
+  if((s_tgt ? s_tgt : s_fb) == s_fb) markDirty(x, y, x + w, y + h);
+}
+
 /*  Смуга → кадр у PSRAM (або в лист переходу). Буфер смуги вільний одразу.  */
 bool lcdPush(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* buf){
   uint16_t* fb = s_tgt ? s_tgt : s_fb;

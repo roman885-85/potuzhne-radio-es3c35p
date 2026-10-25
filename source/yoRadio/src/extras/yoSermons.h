@@ -67,6 +67,8 @@ class YoSermons {
 
 extern YoSermons sermons;
 void utf8FixTail(char* s);   /* прибрати недописану літеру UTF-8 в кінці */
-bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H);   /* JPEG -> W x H RGB565 */
+/*  JPEG -> W x H RGB565. crop > 0 — спершу вирізати з середини прямокутник з
+    пропорцією crop (ширина/висота): логотип посередині банера og:image 1200×630.  */
+bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, float crop = 0);
 
 #endif

@@ -976,12 +976,17 @@ void Menu::_flush(){
       const int16_t step = lcdRowsFor(w, HALF);
       for(int16_t yy = 0; yy < h && step > 0; yy += step){
         const int16_t hh = (h - yy < step) ? (h - yy) : step;
-        uint16_t* buf = half[hi];
-        g.target(buf, x0, y0 + yy, w, hh);
+        /*  Можна малювати й прямо в кадр у PSRAM (lcdFrameFor), але заміряно 26.10.2026:
+            малювання в PSRAM 13 мс замість 6,7, а копіювання смуги — 6,6 мс; разом те
+            саме (вузьке місце — сама PSRAM). Лишаємо перевірений шлях через внутрішню смугу.  */
+        uint16_t* fbp = nullptr;
+        uint16_t* buf = fbp ? fbp : half[hi];
+        g.target(buf, x0, y0 + yy, w, hh, fbp ? lcdFrameStride() : 0);
         int64_t u0 = esp_timer_get_time();
         _drawScene(g);
         int64_t u1 = esp_timer_get_time();
-        if(lcdPush(x0, y0 + yy, w, hh, buf)) hi ^= 1;
+        if(fbp) lcdMarked(x0, y0 + yy, w, hh);
+        else if(lcdPush(x0, y0 + yy, w, hh, buf)) hi ^= 1;
         pfDrawUs += (uint32_t)(u1 - u0); pfXferUs += (uint32_t)(esp_timer_get_time() - u1); pfStrips++;
       }
     }

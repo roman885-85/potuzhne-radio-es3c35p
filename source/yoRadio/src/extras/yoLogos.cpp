@@ -137,7 +137,8 @@ static bool pngDecode(const uint8_t* d, size_t n, uint8_t** outRGBA, uint32_t* W
     вікном 32 КБ (як у zlib), рядок за рядком знімаємо фільтр (потрібні лише
     поточний і попередній рядок) і додаємо точки в суми клітинок W×H. Через рядок
     (Adam7) — ні (таких великих не траплялось).  */
-static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H){
+static void cropRect(uint32_t sw, uint32_t sh, float crop, uint32_t& cx0, uint32_t& cy0, uint32_t& cw, uint32_t& ch);
+static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, float crop = 0){
   static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
   if(n < 33 || memcmp(d, sig, 8)) return false;
   uint32_t w = 0, h = 0; uint8_t bd = 0, ct = 0, il = 0;
@@ -156,13 +157,15 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H){
   const uint8_t ch = ct == 0 ? 1 : ct == 2 ? 3 : ct == 3 ? 1 : ct == 4 ? 2 : ct == 6 ? 4 : 0;
   if(!ch || !(bd == 1 || bd == 2 || bd == 4 || bd == 8 || bd == 16)) return false;
   const uint32_t bitsPx = ch * bd, stride = (w * bitsPx + 7) / 8, bpp = bitsPx >= 8 ? bitsPx / 8 : 1;
-  /*  куди лягає картинка в W×H (з полями, як fitRGBA)  */
-  const float f = fminf((float)W / w, (float)H / h);
-  int dw = (int)(w * f), dh = (int)(h * f); if(dw < 1) dw = 1; if(dh < 1) dh = 1;
+  /*  область джерела (crop) і куди вона лягає в W×H (з полями, як fitRGBA)  */
+  uint32_t cx0, cy0, cw, chh;
+  cropRect(w, h, crop, cx0, cy0, cw, chh);
+  const float f = fminf((float)W / cw, (float)H / chh);
+  int dw = (int)(cw * f), dh = (int)(chh * f); if(dw < 1) dw = 1; if(dh < 1) dh = 1;
   const int ox = (W - dw) / 2, oy = (H - dh) / 2;
   uint32_t* acc = (uint32_t*)heap_caps_calloc((size_t)dw * dh * 4, 4, MALLOC_CAP_SPIRAM);
   uint16_t* xmap = (uint16_t*)ps_malloc((size_t)w * 2);                 /* стовпчик → клітинка */
-  if(xmap) for(uint32_t x = 0; x < w; x++) xmap[x] = (uint16_t)((uint64_t)x * dw / w);
+  if(xmap) for(uint32_t x = 0; x < w; x++) xmap[x] = (x < cx0 || x >= cx0 + cw) ? 0xFFFF : (uint16_t)((uint64_t)(x - cx0) * dw / cw);
   uint8_t* cur = (uint8_t*)ps_malloc(stride + 1);
   uint8_t* prv = (uint8_t*)heap_caps_calloc(stride, 1, MALLOC_CAP_SPIRAM);
   uint8_t* dict = (uint8_t*)ps_malloc(TINFL_LZ_DICT_SIZE);
@@ -184,9 +187,11 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H){
         uint8_t a = x >= bpp ? s[x - bpp] : 0, b = prv[x], c = x >= bpp ? prv[x - bpp] : 0;
         switch(ft){ case 1: s[x] += a; break; case 2: s[x] += b; break; case 3: s[x] += (a + b) >> 1; break; case 4: s[x] += paeth(a, b, c); break; default: break; }
       }
-      const uint32_t py = (uint64_t)y * dh / h;
+      const bool inRow = y >= cy0 && y < cy0 + chh;
+      const uint32_t py = inRow ? (uint64_t)(y - cy0) * dh / chh : 0;
       const uint8_t scale = bd < 8 ? (255 / ((1 << bd) - 1)) : 1;
-      for(uint32_t x = 0; x < w; x++){
+      for(uint32_t x = 0; inRow && x < w; x++){
+        if(xmap[x] == 0xFFFF) continue;
         uint8_t r, g, bl, al;
         const uint16_t v0 = sample(s, x * ch);
         if(ct == 3){ const uint8_t* pp = pal[v0 & 255]; r = pp[0]; g = pp[1]; bl = pp[2]; al = pp[3]; }
@@ -306,8 +311,19 @@ static bool icoDecode(const uint8_t* d, size_t n, uint8_t** outRGBA, uint32_t* W
   return true;
 }
 
+/*  Область джерела: уся або з середини з пропорцією crop.  */
+static void cropRect(uint32_t sw, uint32_t sh, float crop, uint32_t& cx0, uint32_t& cy0, uint32_t& cw, uint32_t& ch){
+  cx0 = cy0 = 0; cw = sw; ch = sh;
+  if(crop <= 0) return;
+  if((float)sw / sh > crop){ cw = (uint32_t)(sh * crop); cx0 = (sw - cw) / 2; }
+  else{ ch = (uint32_t)(sw / crop); cy0 = (sh - ch) / 2; }
+  if(!cw) cw = 1; if(!ch) ch = 1;
+}
+
 /*  RGBA -> W x H RGB565, прозоре на білому, з усередненням пікселів.  */
-static void fitRGBA(const uint8_t* rgba, uint32_t sw, uint32_t sh, uint16_t* out, int W, int H){
+static void fitRGBA(const uint8_t* rgba, uint32_t sw0, uint32_t sh0, uint16_t* out, int W, int H, float crop = 0){
+  uint32_t cx0, cy0, sw, sh;
+  cropRect(sw0, sh0, crop, cx0, cy0, sw, sh);
   float f = fminf((float)W / sw, (float)H / sh);
   int dw = (int)(sw * f), dh = (int)(sh * f);
   if(dw < 1) dw = 1; if(dh < 1) dh = 1;
@@ -322,7 +338,7 @@ static void fitRGBA(const uint8_t* rgba, uint32_t sw, uint32_t sh, uint16_t* out
         uint32_t R = 0, G = 0, B = 0, k = 0;
         for(int yy = y0; yy < y1; yy++)
           for(int xx = x0; xx < x1; xx++){
-            const uint8_t* p = rgba + ((size_t)yy * sw + xx) * 4;
+            const uint8_t* p = rgba + ((size_t)(yy + cy0) * sw0 + xx + cx0) * 4;
             uint32_t a = p[3];
             R += (p[0] * a + 255 * (255 - a)) / 255; G += (p[1] * a + 255 * (255 - a)) / 255; B += (p[2] * a + 255 * (255 - a)) / 255; k++;
           }
@@ -332,21 +348,21 @@ static void fitRGBA(const uint8_t* rgba, uint32_t sw, uint32_t sh, uint16_t* out
     }
 }
 
-bool yoImageFit(const uint8_t* d, size_t n, uint16_t* out, int W, int H){
+bool yoImageFit(const uint8_t* d, size_t n, uint16_t* out, int W, int H, float crop){
   /*  спершу свої (швидкі, перевірені); не впорались — stb_image (прогресивний JPEG,
       PNG через рядок, GIF, ICO з палітрою)  */
-  if(n > 3 && d[0] == 0xFF && d[1] == 0xD8 && yoJpegFit(d, n, out, W, H)) return true;
+  if(n > 3 && d[0] == 0xFF && d[1] == 0xD8 && yoJpegFit(d, n, out, W, H, crop)) return true;
   uint8_t* rgba = nullptr; uint32_t w = 0, h = 0;
   bool ok = false;
   if(n > 24 && d[0] == 0x89 && d[1] == 'P'){
     const uint32_t pw = be32(d + 16), ph = be32(d + 20);              /* IHDR — завжди перший */
-    if((uint64_t)pw * ph > 256 * 1024) return pngFitBig(d, n, out, W, H);
+    if((uint64_t)pw * ph > 256 * 1024) return pngFitBig(d, n, out, W, H, crop);
     ok = pngDecode(d, n, &rgba, &w, &h);
   }
   else if(n > 4 && !d[0] && !d[1] && d[2] == 1 && !d[3]) ok = icoDecode(d, n, &rgba, &w, &h);
   if(!ok){ if(rgba){ free(rgba); rgba = nullptr; } ok = yoStbDecode(d, n, &rgba, &w, &h); }
   if(!ok) return false;
-  fitRGBA(rgba, w, h, out, W, H);
+  fitRGBA(rgba, w, h, out, W, H, crop);
   free(rgba);
   return true;
 }
@@ -411,7 +427,8 @@ static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap){
     WiFiClient* st = http.getStreamPtr();
     int total = http.getSize();
     size_t len = 0;
-    uint32_t deadline = millis() + (total > 200000 ? 40000 : 10000);   /* великий значок — довше */
+    /*  великий значок — довше: 10 с + секунда на кожні 20 КБ (PNG 1 МБ через TLS іде ~30–50 с)  */
+    uint32_t deadline = millis() + 10000 + (total > 0 ? (uint32_t)total / 20 : 0);
     while(len < cap && (int32_t)(deadline - millis()) > 0 && (total < 0 || (int)len < total)){
       int av = st->available();
       if(!av){ if(!st->connected()) break; vTaskDelay(pdMS_TO_TICKS(5)); continue; }
@@ -528,6 +545,141 @@ static bool shareWord(const char* a, const char* b){
   return false;
 }
 
+/*  ---------- значок сайту станції (кого немає в каталозі) ----------
+    Домен потоку («online.kissfm.ua» → «kissfm.ua»), лише якщо його назва схожа на
+    назву станції (інакше це сервіс мовлення — tvstitch, radioking… — і значок чужий).
+    Кирилицю порівнюємо транслітом: «Наше Радіо» → nasheradio, «Мелодія FM» → melodiafm.  */
+static void translit(const char* s, char* o, size_t cap){
+  static const struct { uint16_t c; const char* l; } T[] = {
+    {0x430,"a"},{0x431,"b"},{0x432,"v"},{0x433,"h"},{0x491,"g"},{0x434,"d"},{0x435,"e"},{0x454,"e"},{0x436,"zh"},
+    {0x437,"z"},{0x438,"y"},{0x456,"i"},{0x457,"i"},{0x439,"i"},{0x43A,"k"},{0x43B,"l"},{0x43C,"m"},{0x43D,"n"},
+    {0x43E,"o"},{0x43F,"p"},{0x440,"r"},{0x441,"s"},{0x442,"t"},{0x443,"u"},{0x444,"f"},{0x445,"kh"},{0x446,"ts"},
+    {0x447,"ch"},{0x448,"sh"},{0x449,"shch"},{0x44C,""},{0x44E,"u"},{0x44F,"a"},{0x44B,"y"},{0x44D,"e"},{0x451,"e"},{0x44A,""} };
+  char n[200]; normName(s, n, sizeof(n));
+  size_t k = 0;
+  for(const uint8_t* u = (const uint8_t*)n; *u && k + 5 < cap; ){
+    if(*u < 0x80){ o[k++] = (char)*u++; continue; }
+    uint16_t c = ((u[0] & 0x1F) << 6) | (u[1] & 0x3F); u += 2;
+    for(const auto& t : T) if(t.c == c){ for(const char* q = t.l; *q && k + 1 < cap; q++) o[k++] = *q; break; }
+  }
+  o[k] = 0;
+}
+
+/*  «online.kissfm.ua» → «kissfm.ua»; «onair.lviv.fm» → «lviv.fm»; IP — порожньо.  */
+static void siteOf(const char* host, char* o, size_t cap, char* label, size_t lcap){
+  o[0] = label[0] = 0;
+  if(!host[0] || isdigit((unsigned char)host[strlen(host) - 1])) return;      /* IP */
+  const char* lab[8]; uint8_t n = 0; lab[n++] = host;
+  for(const char* p = host; *p && n < 8; p++) if(*p == '.') lab[n++] = p + 1;
+  if(n < 2) return;
+  /*  друге з кінця — загальне (com.ua, net.ua, gov.ua, co.za…) — беремо три мітки  */
+  static const char* const SLD[] = { "com.", "net.", "org.", "gov.", "co.", "in." };
+  uint8_t take = 2;
+  for(const char* g : SLD) if(n >= 3 && !strncmp(lab[n - 2], g, strlen(g))) take = 3;
+  if(n < take) return;
+  strlcpy(o, lab[n - take], cap);
+  const char* d = strchr(lab[n - take], '.');
+  size_t ll = d ? (size_t)(d - lab[n - take]) : strlen(lab[n - take]);
+  if(ll >= lcap) ll = lcap - 1;
+  memcpy(label, lab[n - take], ll); label[ll] = 0;
+}
+
+static bool siteMatches(const char* label, const char* name){
+  char tl[200], lb[40];
+  size_t k = 0;
+  for(const char* p = label; *p && k + 1 < sizeof(lb); p++) if(isalnum((unsigned char)*p)) lb[k++] = (char)tolower((unsigned char)*p);
+  lb[k] = 0;
+  if(k < 4) return false;
+  translit(name, tl, sizeof(tl));
+  return strstr(tl, lb) != nullptr || (strlen(tl) >= 6 && strstr(lb, tl) != nullptr);
+}
+
+/*  Значки з головної сторінки сайту: <link rel="…icon…" href= sizes=> і
+    <meta property="og:image" content=>. WEBP і SVG — повз (не розпакуємо).  */
+struct SiteIcon { char url[200]; int16_t size; bool og; };
+
+static bool tagAttr(const char* t, const char* te, const char* name, char* out, size_t cap){
+  out[0] = 0;
+  const size_t nl = strlen(name);
+  for(const char* p = t; p + nl + 2 < te; p++){
+    if(strncasecmp(p, name, nl) || p[nl] != '=' || (p > t && isalnum((unsigned char)p[-1]))) continue;
+    const char* v = p + nl + 1;
+    char q = (*v == '"' || *v == '\'') ? *v++ : ' ';
+    size_t k = 0;
+    while(v < te && *v != q && *v != '>' && !(q == ' ' && isspace((unsigned char)*v)) && k + 1 < cap) out[k++] = *v++;
+    out[k] = 0;
+    return k > 0;
+  }
+  return false;
+}
+
+static void absUrl(const char* base, const char* u, char* out, size_t cap){
+  if(!strncmp(u, "http://", 7) || !strncmp(u, "https://", 8)) strlcpy(out, u, cap);
+  else if(!strncmp(u, "//", 2)) snprintf(out, cap, "https:%s", u);
+  else if(u[0] == '/') snprintf(out, cap, "%s%s", base, u);
+  else snprintf(out, cap, "%s/%s", base, u);
+}
+
+static uint8_t siteIcons(const char* html, size_t n, const char* base, SiteIcon* out, uint8_t cap){
+  uint8_t k = 0;
+  char a[220], b[220], u[220];
+  for(const char* p = html; p < html + n && k < cap; p++){
+    if(*p != '<') continue;
+    const bool isLink = !strncasecmp(p + 1, "link", 4), isMeta = !strncasecmp(p + 1, "meta", 4);
+    if(!isLink && !isMeta) continue;
+    const char* te = (const char*)memchr(p, '>', (html + n) - p);
+    if(!te || te - p > 800) continue;
+    if(isLink){
+      if(!tagAttr(p, te, "rel", a, sizeof(a)) || !strcasestr(a, "icon")) continue;
+      if(!tagAttr(p, te, "href", u, sizeof(u))) continue;
+      int16_t sz = 0;
+      if(tagAttr(p, te, "sizes", b, sizeof(b))) sz = (int16_t)atoi(b);
+      if(!sz) sz = strcasestr(a, "apple") ? 180 : (strcasestr(u, ".ico") ? 32 : 64);
+      if(strcasestr(u, ".svg") || strcasestr(u, ".webp") || !strncmp(u, "data:", 5)) continue;
+      absUrl(base, u, out[k].url, sizeof(out[k].url)); out[k].size = sz; out[k].og = false; k++;
+    }else{
+      if(!(tagAttr(p, te, "property", a, sizeof(a)) || tagAttr(p, te, "name", a, sizeof(a))) || strcasecmp(a, "og:image")) continue;
+      if(!tagAttr(p, te, "content", u, sizeof(u)) || strcasestr(u, ".svg") || strcasestr(u, ".webp")) continue;
+      absUrl(base, u, out[k].url, sizeof(out[k].url)); out[k].size = 0; out[k].og = true; k++;
+    }
+    p = te;
+  }
+  return k;
+}
+
+/*  Малими (латиниця й кирилиця), решту лишаємо — для пошуку фрази.  */
+static void lowerUtf8(const char* s, char* o, size_t cap){
+  size_t k = 0;
+  const uint8_t* u = (const uint8_t*)s;
+  while(*u && k + 3 < cap){
+    if(*u < 0x80){ o[k++] = (char)tolower(*u); u++; continue; }
+    if((u[0] & 0xE0) == 0xC0 && u[1]){
+      uint32_t c = ((u[0] & 0x1F) << 6) | (u[1] & 0x3F); u += 2;
+      if(c >= 0x410 && c <= 0x42F) c += 0x20; else if(c >= 0x400 && c <= 0x40F) c += 0x50; else if(c == 0x490) c = 0x491;
+      o[k++] = (char)(0xC0 | (c >> 6)); o[k++] = (char)(0x80 | (c & 0x3F));
+      continue;
+    }
+    o[k++] = (char)*u++;
+  }
+  o[k] = 0;
+}
+
+/*  Назва станції в назві з каталогу цілою фразою: «Радіо Промінь / Radio Promin»
+    містить «Радіо Промінь»; а «Flux FM» — не «Lux FM» (межа слова).  */
+static bool phraseIn(const char* hay, const char* name){
+  char h[160], n[100];
+  lowerUtf8(hay, h, sizeof(h)); lowerUtf8(name, n, sizeof(n));
+  const size_t nl = strlen(n);
+  if(nl < 6) return false;
+  for(const char* p = strstr(h, n); p; p = strstr(p + 1, n)){
+    const bool before = p == h || (!isalnum((unsigned char)p[-1]) && (uint8_t)p[-1] < 0x80);
+    const char e = p[nl];
+    const bool after = !e || (!isalnum((unsigned char)e) && (uint8_t)e < 0x80);
+    if(before && after) return true;
+  }
+  return false;
+}
+
 /*  Вибрати значок з відповіді. mode 0 — byurl (будь-яка станція з тим самим
     потоком); 1 — пошук за назвою: та сама назва (і країна за доменом, коли вона є)
     або той самий сервер потоку зі спільним словом у назві. Пропускаємо SVG
@@ -538,7 +690,7 @@ static bool pickFavicon(const char* json, const char* myName, const char* myUrl,
   normName(myName, my, sizeof(my));
   hostOf(myUrl, myHost, sizeof(myHost));
   const bool hasCc = tldCountry(myHost, myCc);
-  for(uint8_t pass = 0; pass < (mode ? 2 : 1); pass++){
+  for(uint8_t pass = 0; pass < (mode ? 3 : 1); pass++){
     uint8_t seen = 0;
     const char* p = json;
     while((p = strchr(p, '{')) != nullptr){
@@ -552,6 +704,10 @@ static bool pickFavicon(const char* json, const char* myName, const char* myUrl,
           if(pass == 0){
             ok = my[0] && !strcmp(nm, my);
             if(ok && hasCc && jsonField(p, e, "countrycode", cc, sizeof(cc)) && strcmp(cc, myCc)) ok = false;   /* «Radio Roks» з Латвії */
+          }else if(pass == 2){
+            /*  наша назва цілою фразою в назві з каталогу — і та сама країна (коли домен її дає)  */
+            ok = phraseIn(u1, myName);
+            if(ok && hasCc && (!jsonField(p, e, "countrycode", cc, sizeof(cc)) || strcmp(cc, myCc))) ok = false;
           }else{
             char a[200];
             jsonField(p, e, "url", a, sizeof(a)); hostOf(a, h1, sizeof(h1));
@@ -639,9 +795,8 @@ int YoLogos::_one(){
       else{ js[n] = 0; if(pickFavicon((char*)js, _name, _url, 1, 0, fav, sizeof(fav))){ jl = n; mode = 1; } }
     }
     if(jl == -2) result = -1;
-    else if(jl < 0) result = 0;
-    else{
-      /*  значок; не розпакувався (SVG під іншим ім'ям, битий файл) — наступний кандидат  */
+    if(jl >= 0){
+      /*  значок з каталогу; не розпакувався (SVG під іншим ім'ям, битий файл) — наступний кандидат  */
       result = 0;
       for(uint8_t k = 0; k < 3 && result == 0; k++){
         if(k && !pickFavicon((char*)js, _name, _url, mode, k, fav, sizeof(fav))) break;
@@ -664,6 +819,53 @@ int YoLogos::_one(){
           if(o){ o.write((uint8_t*)px, LOGO_S * LOGO_S * 2); o.close(); result = 1; }
         }
         if(px) free(px);
+      }
+    }
+    /*  у каталозі немає або його значки не відкрились — з сайту станції  */
+    if(jl == -1 || (jl >= 0 && result == 0)){
+      /*  3) у каталозі немає — значок із сайту станції (головна сторінка: <link>, og:image; далі служба Google)  */
+      result = 0;
+      char host[64], site[64], label[40];
+      hostOf(_url, host, sizeof(host));
+      siteOf(host, site, sizeof(site), label, sizeof(label));
+      if(site[0] && siteMatches(label, _name)){
+        /*  головна сторінка сайту: значки з <link> і og:image  */
+        SiteIcon ic[10]; uint8_t ni = 0;
+        char base[96];
+        for(uint8_t v = 0; v < 2 && !ni; v++){
+          snprintf(base, sizeof(base), v ? "https://www.%s" : "https://%s", site);
+          char home[110]; snprintf(home, sizeof(home), "%s/", base);
+          n = httpGet(home, buf, 512 * 1024);
+          if(n > 0){ buf[n] = 0; ni = siteIcons((const char*)buf, n, base, ic, 10); }
+        }
+        /*  порядок: великі значки (≥ 96) → середина og:image → дрібніші → служба Google  */
+        int8_t order[12]; uint8_t no = 0;
+        for(int16_t lim : { (int16_t)96, (int16_t)0 })
+          for(uint8_t pass = 0; pass < 2; pass++)
+            for(uint8_t i = 0; i < ni; i++){
+              const bool big = !ic[i].og && ic[i].size >= 96;
+              if(lim == 96 && pass == 0 && big) order[no++] = i;
+              if(lim == 96 && pass == 1 && ic[i].og) order[no++] = i;
+              if(lim == 0 && pass == 0 && !ic[i].og && !big && ic[i].size >= 32) order[no++] = i;
+            }
+        /*  з великих — спершу найбільший  */
+        for(uint8_t i = 0; i < no; i++) for(uint8_t j = i + 1; j < no; j++)
+          if(!ic[order[i]].og && !ic[order[j]].og && ic[order[i]].size >= 96 && ic[order[j]].size > ic[order[i]].size){ int8_t t = order[i]; order[i] = order[j]; order[j] = t; }
+        order[no++] = -1;                                   /* служба Google */
+        for(uint8_t k = 0; k < no && k < 6 && result == 0; k++){
+          char cu[220]; float crop = 0;
+          if(order[k] < 0) snprintf(cu, sizeof(cu), "https://www.google.com/s2/favicons?domain=%s&sz=128", site);
+          else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = 1.15f; }
+          n = httpGet(cu, buf, LG_MAXDL);
+          if(n < 0){ result = -1; break; }
+          uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
+          if(px && n > 64 && yoImageFit(buf, n, px, LOGO_S, LOGO_S, crop)){
+            char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
+            File o = SPIFFS.open(path, "w");
+            if(o){ o.write((uint8_t*)px, LOGO_S * LOGO_S * 2); o.close(); result = 1; strlcpy(fav, cu, sizeof(fav)); }
+          }
+          if(px) free(px);
+        }
       }
     }
   }
@@ -719,7 +921,7 @@ void YoLogos::_testTask(void* arg){
 /*  ---------- усі станції списку ---------- */
 /*  «all3»: прохід із розумнішим пошуком, переадресаціями й stb_image (25.10.2026) — старі
     позначки «нема» один раз скидаються, і всі станції без логотипа шукаються наново.  */
-#define LG_ALLFLAG "/logo/all3.ok"
+#define LG_ALLFLAG "/logo/all7.ok"
 
 /*  Список «назва<Tab>адреса<Tab>гучність» — у PSRAM, один раз за прохід.  */
 struct LgSt { char name[64]; char url[200]; };
@@ -729,7 +931,7 @@ void YoLogos::_allTask(void* arg){
   YoLogos* s = (YoLogos*)arg;
   if(s->_bForget){
     const uint16_t k = s->forget();
-    File o = SPIFFS.open("/logo/all3.no", "w"); if(o){ o.print("1"); o.close(); }
+    File o = SPIFFS.open("/logo/all7.no", "w"); if(o){ o.print("1"); o.close(); }
     s->_bForget = false;
     Serial.printf("##LOGO#\tпозначок «нема» скинуто: %u\n", (unsigned)k);
   }
@@ -808,7 +1010,7 @@ void YoLogos::loop(){
   if(!autoDone && WiFi.status() == WL_CONNECTED && millis() > 25000){
     autoDone = true;
     if(!SPIFFS.exists(LG_ALLFLAG)){                /* разово: позначка — після повного проходу без мережевих збоїв */
-      _bForget = !SPIFFS.exists("/logo/all3.no");  /* перший прохід розумнішого пошуку: позначки «нема» з минулого — геть (у задачі) */
+      _bForget = !SPIFFS.exists("/logo/all7.no");  /* перший прохід розумнішого пошуку: позначки «нема» з минулого — геть (у задачі) */
       fetchAll();
     }
   }

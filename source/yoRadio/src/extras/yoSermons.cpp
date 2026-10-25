@@ -265,7 +265,7 @@ static UINT covOut(JDEC* jd, void* bitmap, JRECT* r){
 /*  Розпакувати JPEG (звичайний, не прогресивний) і вписати в W x H, зі
     збереженням пропорцій і середнім по пікселях джерела. Спільне для
     обкладинок проповідей і логотипів станцій.  */
-bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H){
+bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, float crop){
   bool ok = false;
   CoverCtx c = { jpg, len, 0, nullptr, 0, 0 };
   JDEC jd;
@@ -279,8 +279,15 @@ bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H){
     rgb = (uint8_t*)ps_malloc((uint32_t)c.w * c.h * 3);
     c.rgb = rgb;
     if(rgb && jd_decomp(&jd, covOut, sc) == JDR_OK){
-      float f = fminf((float)W / c.w, (float)H / c.h);
-      int dw = (int)(c.w * f), dh = (int)(c.h * f);
+      /*  область джерела: уся або вирізана з середини (crop)  */
+      int cw = c.w, ch = c.h, cx0 = 0, cy0 = 0;
+      if(crop > 0){
+        if((float)c.w / c.h > crop){ cw = (int)(c.h * crop); cx0 = (c.w - cw) / 2; }
+        else{ ch = (int)(c.w / crop); cy0 = (c.h - ch) / 2; }
+        if(cw < 1) cw = 1; if(ch < 1) ch = 1;
+      }
+      float f = fminf((float)W / cw, (float)H / ch);
+      int dw = (int)(cw * f), dh = (int)(ch * f);
       if(dw < 1) dw = 1; if(dh < 1) dh = 1;
       int ox = (W - dw) / 2, oy = (H - dh) / 2;
       for(int y = 0; y < H; y++)
@@ -288,8 +295,8 @@ bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H){
           uint16_t v = 0;
           int sx = x - ox, sy = y - oy;
           if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
-            int x0 = sx * c.w / dw, x1 = (sx + 1) * c.w / dw; if(x1 <= x0) x1 = x0 + 1;
-            int y0 = sy * c.h / dh, y1 = (sy + 1) * c.h / dh; if(y1 <= y0) y1 = y0 + 1;
+            int x0 = cx0 + sx * cw / dw, x1 = cx0 + (sx + 1) * cw / dw; if(x1 <= x0) x1 = x0 + 1;
+            int y0 = cy0 + sy * ch / dh, y1 = cy0 + (sy + 1) * ch / dh; if(y1 <= y0) y1 = y0 + 1;
             uint32_t r = 0, g = 0, b = 0, k = 0;
             for(int yy = y0; yy < y1; yy++)
               for(int xx = x0; xx < x1; xx++){

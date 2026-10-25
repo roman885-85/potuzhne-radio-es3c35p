@@ -58,8 +58,8 @@ uint16_t toCp1251(const char* s, uint8_t* out, uint16_t cap){
 }
 
 /*  ---------- основа ---------- */
-void Gfx::target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh){
-  _px = px; _tx = sx; _ty = sy; _tw = sw; _th = sh;
+void Gfx::target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh, int16_t stride){
+  _px = px; _tx = sx; _ty = sy; _tw = sw; _th = sh; _ts = stride > 0 ? stride : sw;
   _ox = 0; _oy = 0; _oxP = 0; _oyP = 0;
   unclip();
 }
@@ -93,7 +93,7 @@ void Gfx::_fillP(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c){
   if(x1 <= x0 || y1 <= y0) return;
   const uint32_t n = (uint32_t)(x1 - x0);
   for(int16_t yy = y0; yy < y1; yy++)
-    sFill(_px + (int32_t)(yy - _ty) * _tw + (x0 - _tx), n, c);
+    sFill(_px + (int32_t)(yy - _ty) * _ts + (x0 - _tx), n, c);
 }
 
 void Gfx::fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c){
@@ -109,7 +109,7 @@ void Gfx::blit(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px){
   if(x1 <= x0 || y1 <= y0) return;
   const size_t n = (size_t)(x1 - x0) * 2;
   for(int16_t yy = y0; yy < y1; yy++)
-    memcpy(_px + (int32_t)(yy - _ty) * _tw + (x0 - _tx), px + (int32_t)(yy - sy0) * w + (x0 - sx0), n);
+    memcpy(_px + (int32_t)(yy - _ty) * _ts + (x0 - _tx), px + (int32_t)(yy - sy0) * w + (x0 - sx0), n);
 }
 
 void Gfx::fillA(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c, uint8_t a){
@@ -121,7 +121,7 @@ void Gfx::fillA(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c, uint8_t 
     /*  затемнення чорним (перехід між сторінками, тінь під карткою) — лише множення  */
     const uint32_t k = 256 - a;
     for(int16_t yy = y0; yy < y1; yy++){
-      uint16_t* p = _px + (int32_t)(yy - _ty) * _tw + (x0 - _tx);
+      uint16_t* p = _px + (int32_t)(yy - _ty) * _ts + (x0 - _tx);
       for(int16_t i = x1 - x0; i > 0; i--, p++){
         const uint32_t v = *p;
         *p = (uint16_t)(((((v >> 11) & 31) * k >> 8) << 11) | ((((v >> 5) & 63) * k >> 8) << 5) | (((v & 31) * k) >> 8));
@@ -130,7 +130,7 @@ void Gfx::fillA(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c, uint8_t 
     return;
   }
   for(int16_t yy = y0; yy < y1; yy++){
-    uint16_t* p = _px + (int32_t)(yy - _ty) * _tw + (x0 - _tx);
+    uint16_t* p = _px + (int32_t)(yy - _ty) * _ts + (x0 - _tx);
     for(int16_t i = x1 - x0; i > 0; i--, p++) *p = blend(*p, c, a);
   }
 }
@@ -163,7 +163,7 @@ void Gfx::vgrad(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c0, uint16_
       if(rr > 31) rr = 31; if(gg > 63) gg = 63; if(bb > 31) bb = 31;
       pat[i] = pat[i + 4] = (uint16_t)((rr << 11) | (gg << 5) | bb);
     }
-    sFillPat(_px + (int32_t)(yy - _ty) * _tw + (x0 - _tx), n, pat, (uint8_t)(x0 & 3));
+    sFillPat(_px + (int32_t)(yy - _ty) * _ts + (x0 - _tx), n, pat, (uint8_t)(x0 & 3));
   }
 }
 
@@ -246,7 +246,7 @@ void Gfx::circle(float cx, float cy, float r, uint16_t c){
   const float rin = r - 0.75f > 0 ? (r - 0.75f) * (r - 0.75f) : 0, rout = (r + 0.75f) * (r + 0.75f);
   for(int16_t yy = y0; yy <= y1; yy++){
     float dy = yy + 0.5f - scy;
-    uint16_t* row = _px + (int32_t)(yy - _ty) * _tw;
+    uint16_t* row = _px + (int32_t)(yy - _ty) * _ts;
     for(int16_t xx = x0; xx <= x1; xx++){
       float dx = xx + 0.5f - scx, d2 = dx * dx + dy * dy;
       if(d2 >= rout) continue;
@@ -355,7 +355,7 @@ void Gfx::lighten(const Rect& area, uint8_t r, float cx, float cy, float rad, ui
   const uint8_t* t = cornerTable(r);
   for(int16_t yy = by0; yy < by1; yy++){
     const float dy = yy + 0.5f - scy;
-    uint16_t* row = _px + (int32_t)(yy - _ty) * _tw;
+    uint16_t* row = _px + (int32_t)(yy - _ty) * _ts;
     for(int16_t xx = bx0; xx < bx1; xx++){
       const float dx = xx + 0.5f - scx, d2 = dx * dx + dy * dy;
       if(d2 >= (rad + 1) * (rad + 1)) continue;
@@ -385,7 +385,7 @@ void Gfx::image(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px, 
   for(int16_t yy = 0; yy < dh; yy++){
     const int16_t sy = dy0 + yy;
     if(sy < _cy0 || sy >= _cy1) continue;
-    uint16_t* row = _px + (int32_t)(sy - _ty) * _tw;
+    uint16_t* row = _px + (int32_t)(sy - _ty) * _ts;
     int16_t y0s = yy, y1s = yy; uint16_t ay = 0;
     if(!same){
       float fy = (yy + 0.5f) * ky - 0.5f; if(fy < 0) fy = 0;
@@ -443,7 +443,7 @@ void Gfx::_glyphs(int16_t sx, int16_t sb, const uint8_t* cp, uint16_t n, const G
       for(int16_t yy = 0; yy < h; yy++){
         const int16_t py = gy + yy;
         if(py < _cy0 || py >= _cy1) continue;
-        uint16_t* line = _px + (int32_t)(py - _ty) * _tw;
+        uint16_t* line = _px + (int32_t)(py - _ty) * _ts;
         uint32_t idx = (uint32_t)yy * w;
         for(int16_t xx = 0; xx < w; xx++, idx++){
           const uint8_t a = (idx & 1) ? (bm[idx >> 1] & 0x0F) : (bm[idx >> 1] >> 4);

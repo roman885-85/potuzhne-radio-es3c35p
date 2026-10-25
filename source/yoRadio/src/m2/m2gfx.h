@@ -35,7 +35,9 @@ class Gfx {
         байтів) — у ПІКСЕЛЯХ ПАНЕЛІ. Усе інше (origin, фігури, текст, обрізання
         через narrow/clipLocal) — у логічних пікселях сторінок; переведення —
         тут, у Gfx (uiP із m2theme.h). На ES3C28P це 1:1.  */
-    void target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh);
+    /*  stride — крок рядка в пікселях (0 — як ширина): на ES3C35P меню малює прямо в
+        кадр у PSRAM (крок 480), без копії смуги.  */
+    void target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh, int16_t stride = 0);
     /*  Зсув «локальних» координат. Логічна частина (ox/oy) — для сторінок, що
         рахують від неї видимі рядки; у пікселі панелі зсув переводиться ОКРЕМО
         від вмісту: позиція = uiP(локальна) + uiP(зсув). Тоді на масштабі 4/3
@@ -115,7 +117,7 @@ class Gfx {
 
   private:
     uint16_t* _px = nullptr;
-    int16_t _tx = 0, _ty = 0, _tw = 0, _th = 0;
+    int16_t _tx = 0, _ty = 0, _tw = 0, _th = 0, _ts = 0;   /* _ts — крок рядка буфера */
     int16_t _cx0 = 0, _cy0 = 0, _cx1 = 0, _cy1 = 0;
     int16_t _ox = 0, _oy = 0;
     int16_t _oxP = 0, _oyP = 0;           /* той самий зсув у пікселях панелі */
@@ -128,7 +130,7 @@ class Gfx {
     void _boxP(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t r, uint16_t c);
     inline void _cover(int16_t sx, int16_t sy, float cov, uint16_t c){
       if(cov <= 0 || sx < _cx0 || sy < _cy0 || sx >= _cx1 || sy >= _cy1) return;
-      uint16_t* p = _px + (int32_t)(sy - _ty) * _tw + (sx - _tx);
+      uint16_t* p = _px + (int32_t)(sy - _ty) * _ts + (sx - _tx);
       *p = cov >= 1 ? c : blend(*p, c, (uint8_t)(cov * 255));
     }
     void _glyphs(int16_t sx, int16_t sb, const uint8_t* cp, uint16_t n, const GFXfont* f, uint16_t c);   /* пікселі панелі */
