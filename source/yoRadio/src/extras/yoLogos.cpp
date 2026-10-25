@@ -132,48 +132,72 @@ static bool pngDecode(const uint8_t* d, size_t n, uint8_t** outRGBA, uint32_t* W
   return true;
 }
 
+/*  ---------- межі логотипа на банері ----------
+    Фон — колір кутової точки (прозоре — на білому); логотип — усе, що від нього
+    помітно відрізняється. Повертає прямокутник з полем ~6 %; нічого — уся картинка.  */
+void yoContentBox(const uint8_t* px, uint32_t w, uint32_t h, uint8_t chans, uint32_t& cx0, uint32_t& cy0, uint32_t& cw, uint32_t& ch, uint16_t* bg565){
+  auto rgbAt = [&](uint32_t x, uint32_t y, int& r, int& g, int& b){
+    const uint8_t* p = px + ((size_t)y * w + x) * chans;
+    const int a = chans == 4 ? p[3] : 255;
+    r = (p[0] * a + 255 * (255 - a)) / 255; g = (p[1] * a + 255 * (255 - a)) / 255; b = (p[2] * a + 255 * (255 - a)) / 255;
+  };
+  int br, bg, bb; rgbAt(0, 0, br, bg, bb);
+  if(bg565) *bg565 = (uint16_t)(((br & 0xF8) << 8) | ((bg & 0xFC) << 3) | (bb >> 3));
+  uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
+  for(uint32_t y = 0; y < h; y++)
+    for(uint32_t x = 0; x < w; x++){
+      int r, g, b; rgbAt(x, y, r, g, b);
+      /*  150: білий логотип на темному банері (~600) — так, градієнт фону (< 90) — ні  */
+      if(abs(r - br) + abs(g - bg) + abs(b - bb) > 150){ if(x < x0) x0 = x; if(x > x1) x1 = x; if(y < y0) y0 = y; if(y > y1) y1 = y; }
+    }
+  if(x1 < x0 || y1 < y0){ cx0 = cy0 = 0; cw = w; ch = h; return; }
+  const uint32_t pad = ((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0)) * 6 / 100 + 1;
+  cx0 = x0 > pad ? x0 - pad : 0; cy0 = y0 > pad ? y0 - pad : 0;
+  const uint32_t ex = x1 + pad + 1 < w ? x1 + pad + 1 : w, ey = y1 + pad + 1 < h ? y1 + pad + 1 : h;
+  cw = ex - cx0; ch = ey - cy0;
+}
+
 /*  ---------- великий PNG: потоком, одразу у W×H ----------
     Цілком такий не розпакуєш (1920×1920 — 11 МБ рядків), тож: розпаковувач із
     вікном 32 КБ (як у zlib), рядок за рядком знімаємо фільтр (потрібні лише
-    поточний і попередній рядок) і додаємо точки в суми клітинок W×H. Через рядок
-    (Adam7) — ні (таких великих не траплялось).  */
+    поточний і попередній рядок) і віддаємо рядок RGBA. Через рядок (Adam7) — ні.
+    Банер og:image (crop < 0) — двічі: спершу межі логотипа, потім сам логотип.  */
 static void cropRect(uint32_t sw, uint32_t sh, float crop, uint32_t& cx0, uint32_t& cy0, uint32_t& cw, uint32_t& ch);
-static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, float crop = 0){
+
+struct PngInfo { uint32_t w, h; uint8_t bd, ct, ch; uint8_t pal[256][4]; };
+
+static bool pngHead(const uint8_t* d, size_t n, PngInfo& pi){
   static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
   if(n < 33 || memcmp(d, sig, 8)) return false;
-  uint32_t w = 0, h = 0; uint8_t bd = 0, ct = 0, il = 0;
-  uint8_t pal[256][4]; uint16_t npal = 0;
-  for(int i = 0; i < 256; i++){ pal[i][0] = pal[i][1] = pal[i][2] = 0; pal[i][3] = 255; }
+  uint8_t il = 0; pi.w = pi.h = 0; pi.bd = pi.ct = 0;
+  for(int i = 0; i < 256; i++){ pi.pal[i][0] = pi.pal[i][1] = pi.pal[i][2] = 0; pi.pal[i][3] = 255; }
   for(size_t p = 8; p + 12 <= n; ){
     uint32_t len = be32(d + p); const uint8_t* t = d + p + 4; const uint8_t* c = d + p + 8;
     if(p + 12 + len > n) break;
-    if(!memcmp(t, "IHDR", 4) && len >= 13){ w = be32(c); h = be32(c + 4); bd = c[8]; ct = c[9]; il = c[12]; }
-    else if(!memcmp(t, "PLTE", 4)){ npal = len / 3; if(npal > 256) npal = 256; for(uint16_t k = 0; k < npal; k++){ pal[k][0] = c[k*3]; pal[k][1] = c[k*3+1]; pal[k][2] = c[k*3+2]; } }
-    else if(!memcmp(t, "tRNS", 4) && ct == 3){ for(uint32_t k = 0; k < len && k < 256; k++) pal[k][3] = c[k]; }
+    if(!memcmp(t, "IHDR", 4) && len >= 13){ pi.w = be32(c); pi.h = be32(c + 4); pi.bd = c[8]; pi.ct = c[9]; il = c[12]; }
+    else if(!memcmp(t, "PLTE", 4)){ uint16_t np = len / 3; if(np > 256) np = 256; for(uint16_t k = 0; k < np; k++){ pi.pal[k][0] = c[k*3]; pi.pal[k][1] = c[k*3+1]; pi.pal[k][2] = c[k*3+2]; } }
+    else if(!memcmp(t, "tRNS", 4) && pi.ct == 3){ for(uint32_t k = 0; k < len && k < 256; k++) pi.pal[k][3] = c[k]; }
     else if(!memcmp(t, "IEND", 4)) break;
     p += 12 + len;
   }
-  if(!w || !h || il || w > 8192 || h > 8192) return false;
-  const uint8_t ch = ct == 0 ? 1 : ct == 2 ? 3 : ct == 3 ? 1 : ct == 4 ? 2 : ct == 6 ? 4 : 0;
-  if(!ch || !(bd == 1 || bd == 2 || bd == 4 || bd == 8 || bd == 16)) return false;
+  if(!pi.w || !pi.h || il || pi.w > 8192 || pi.h > 8192) return false;
+  pi.ch = pi.ct == 0 ? 1 : pi.ct == 2 ? 3 : pi.ct == 3 ? 1 : pi.ct == 4 ? 2 : pi.ct == 6 ? 4 : 0;
+  return pi.ch && (pi.bd == 1 || pi.bd == 2 || pi.bd == 4 || pi.bd == 8 || pi.bd == 16);
+}
+
+/*  Рядки PNG по черзі: cb(y, rgba) — w точок по 4 байти.  */
+template<typename F> static bool pngRows(const uint8_t* d, size_t n, const PngInfo& pi, F cb){
+  const uint32_t w = pi.w, h = pi.h, bd = pi.bd, ct = pi.ct, ch = pi.ch;
   const uint32_t bitsPx = ch * bd, stride = (w * bitsPx + 7) / 8, bpp = bitsPx >= 8 ? bitsPx / 8 : 1;
-  /*  область джерела (crop) і куди вона лягає в W×H (з полями, як fitRGBA)  */
-  uint32_t cx0, cy0, cw, chh;
-  cropRect(w, h, crop, cx0, cy0, cw, chh);
-  const float f = fminf((float)W / cw, (float)H / chh);
-  int dw = (int)(cw * f), dh = (int)(chh * f); if(dw < 1) dw = 1; if(dh < 1) dh = 1;
-  const int ox = (W - dw) / 2, oy = (H - dh) / 2;
-  uint32_t* acc = (uint32_t*)heap_caps_calloc((size_t)dw * dh * 4, 4, MALLOC_CAP_SPIRAM);
-  uint16_t* xmap = (uint16_t*)ps_malloc((size_t)w * 2);                 /* стовпчик → клітинка */
-  if(xmap) for(uint32_t x = 0; x < w; x++) xmap[x] = (x < cx0 || x >= cx0 + cw) ? 0xFFFF : (uint16_t)((uint64_t)(x - cx0) * dw / cw);
   uint8_t* cur = (uint8_t*)ps_malloc(stride + 1);
   uint8_t* prv = (uint8_t*)heap_caps_calloc(stride, 1, MALLOC_CAP_SPIRAM);
+  uint8_t* rgba = (uint8_t*)ps_malloc((size_t)w * 4);
   uint8_t* dict = (uint8_t*)ps_malloc(TINFL_LZ_DICT_SIZE);
   tinfl_decompressor* dz = (tinfl_decompressor*)ps_malloc(sizeof(tinfl_decompressor));
   bool ok = false;
-  if(acc && xmap && cur && prv && dict && dz){
+  if(cur && prv && rgba && dict && dz){
     tinfl_init(dz);
-    uint32_t y = 0, fill = 0;            /* рядок і скільки байтів поточного рядка вже є */
+    uint32_t y = 0, fill = 0;
     size_t dictOfs = 0;
     bool done = false, bad = false;
     auto sample = [&](const uint8_t* s, uint32_t idx)->uint16_t{
@@ -187,21 +211,15 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, f
         uint8_t a = x >= bpp ? s[x - bpp] : 0, b = prv[x], c = x >= bpp ? prv[x - bpp] : 0;
         switch(ft){ case 1: s[x] += a; break; case 2: s[x] += b; break; case 3: s[x] += (a + b) >> 1; break; case 4: s[x] += paeth(a, b, c); break; default: break; }
       }
-      const bool inRow = y >= cy0 && y < cy0 + chh;
-      const uint32_t py = inRow ? (uint64_t)(y - cy0) * dh / chh : 0;
       const uint8_t scale = bd < 8 ? (255 / ((1 << bd) - 1)) : 1;
-      for(uint32_t x = 0; inRow && x < w; x++){
-        if(xmap[x] == 0xFFFF) continue;
-        uint8_t r, g, bl, al;
+      for(uint32_t x = 0; x < w; x++){
+        uint8_t* o = rgba + x * 4;
         const uint16_t v0 = sample(s, x * ch);
-        if(ct == 3){ const uint8_t* pp = pal[v0 & 255]; r = pp[0]; g = pp[1]; bl = pp[2]; al = pp[3]; }
-        else if(ct == 0 || ct == 4){ r = g = bl = (uint8_t)(v0 * scale); al = ct == 4 ? (uint8_t)sample(s, x * ch + 1) : 255; }
-        else{ r = (uint8_t)v0; g = (uint8_t)sample(s, x * ch + 1); bl = (uint8_t)sample(s, x * ch + 2); al = ct == 6 ? (uint8_t)sample(s, x * ch + 3) : 255; }
-        uint32_t* a4 = acc + ((size_t)py * dw + xmap[x]) * 4;
-        if(al == 255){ a4[0] += r; a4[1] += g; a4[2] += bl; }
-        else{ a4[0] += (r * al + 255 * (255 - al)) / 255; a4[1] += (g * al + 255 * (255 - al)) / 255; a4[2] += (bl * al + 255 * (255 - al)) / 255; }
-        a4[3]++;
+        if(ct == 3){ const uint8_t* pp = pi.pal[v0 & 255]; o[0] = pp[0]; o[1] = pp[1]; o[2] = pp[2]; o[3] = pp[3]; }
+        else if(ct == 0 || ct == 4){ o[0] = o[1] = o[2] = (uint8_t)(v0 * scale); o[3] = ct == 4 ? (uint8_t)sample(s, x * ch + 1) : 255; }
+        else{ o[0] = (uint8_t)v0; o[1] = (uint8_t)sample(s, x * ch + 1); o[2] = (uint8_t)sample(s, x * ch + 2); o[3] = ct == 6 ? (uint8_t)sample(s, x * ch + 3) : 255; }
       }
+      cb(y, rgba);
       memcpy(prv, s, stride);
       y++; fill = 0;
       if(!(y & 31)) vTaskDelay(1);                 /* віддати ядро — задача простою й сторож */
@@ -222,32 +240,84 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, f
           dictOfs = (dictOfs + outB) & (TINFL_LZ_DICT_SIZE - 1);
           if(st == TINFL_STATUS_DONE){ done = true; break; }
           if(st < 0){ bad = true; break; }
-          if(st == TINFL_STATUS_NEEDS_MORE_INPUT && !left) break;     /* наступний IDAT */
+          if(st == TINFL_STATUS_NEEDS_MORE_INPUT && !left) break;
           if(y >= h){ done = true; break; }
         }
       }else if(!memcmp(d + p + 4, "IEND", 4)) break;
       p += 12 + len;
     }
-    if(y >= h){
+    ok = y >= h;
+  }
+  if(cur) free(cur);
+  if(prv) free(prv);
+  if(rgba) free(rgba);
+  if(dict) free(dict);
+  if(dz) free(dz);
+  return ok;
+}
+
+static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, float crop = 0){
+  PngInfo* pi = (PngInfo*)ps_malloc(sizeof(PngInfo));
+  if(!pi || !pngHead(d, n, *pi)){ if(pi) free(pi); return false; }
+  const uint32_t w = pi->w, h = pi->h;
+  uint32_t cx0, cy0, cw, chh;
+  uint16_t fill = 0xFFFF;                         /* поля навколо вписаного — білі (прозоре теж на білому) */
+  if(crop < 0){
+    /*  межі логотипа: перший прохід — лише порівняння з кольором кутової точки  */
+    int br = -1, bg = 0, bb = 0;
+    uint32_t x0 = w, y0 = h, x1 = 0, y1 = 0;
+    pngRows(d, n, *pi, [&](uint32_t y, const uint8_t* row){
+      for(uint32_t x = 0; x < w; x++){
+        const uint8_t* q = row + x * 4; const int a = q[3];
+        const int r = (q[0] * a + 255 * (255 - a)) / 255, g = (q[1] * a + 255 * (255 - a)) / 255, b = (q[2] * a + 255 * (255 - a)) / 255;
+        if(br < 0){ br = r; bg = g; bb = b; }
+        if(abs(r - br) + abs(g - bg) + abs(b - bb) > 150){ if(x < x0) x0 = x; if(x > x1) x1 = x; if(y < y0) y0 = y; if(y > y1) y1 = y; }
+      }
+    });
+    if(br >= 0) fill = (uint16_t)(((br & 0xF8) << 8) | ((bg & 0xFC) << 3) | (bb >> 3));   /* поля — кольором банера */
+    if(x1 >= x0 && y1 >= y0){
+      const uint32_t pad = ((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0)) * 6 / 100 + 1;
+      cx0 = x0 > pad ? x0 - pad : 0; cy0 = y0 > pad ? y0 - pad : 0;
+      cw = (x1 + pad + 1 < w ? x1 + pad + 1 : w) - cx0; chh = (y1 + pad + 1 < h ? y1 + pad + 1 : h) - cy0;
+    }else{ cx0 = cy0 = 0; cw = w; chh = h; }
+  }else cropRect(w, h, crop, cx0, cy0, cw, chh);
+  /*  область джерела і куди вона лягає в W×H (з полями, як fitRGBA)  */
+  const float f = fminf((float)W / cw, (float)H / chh);
+  int dw = (int)(cw * f), dh = (int)(chh * f); if(dw < 1) dw = 1; if(dh < 1) dh = 1;
+  const int ox = (W - dw) / 2, oy = (H - dh) / 2;
+  uint32_t* acc = (uint32_t*)heap_caps_calloc((size_t)dw * dh * 4, 4, MALLOC_CAP_SPIRAM);
+  uint16_t* xmap = (uint16_t*)ps_malloc((size_t)w * 2);
+  bool ok = false;
+  if(acc && xmap){
+    for(uint32_t x = 0; x < w; x++) xmap[x] = (x < cx0 || x >= cx0 + cw) ? 0xFFFF : (uint16_t)((uint64_t)(x - cx0) * dw / cw);
+    ok = pngRows(d, n, *pi, [&](uint32_t y, const uint8_t* row){
+      if(y < cy0 || y >= cy0 + chh) return;
+      const uint32_t py = (uint64_t)(y - cy0) * dh / chh;
+      for(uint32_t x = 0; x < w; x++){
+        if(xmap[x] == 0xFFFF) continue;
+        const uint8_t* q = row + x * 4; const uint32_t al = q[3];
+        uint32_t* a4 = acc + ((size_t)py * dw + xmap[x]) * 4;
+        if(al == 255){ a4[0] += q[0]; a4[1] += q[1]; a4[2] += q[2]; }
+        else{ a4[0] += (q[0] * al + 255 * (255 - al)) / 255; a4[1] += (q[1] * al + 255 * (255 - al)) / 255; a4[2] += (q[2] * al + 255 * (255 - al)) / 255; }
+        a4[3]++;
+      }
+    });
+    if(ok){
       for(int yy = 0; yy < H; yy++)
         for(int xx = 0; xx < W; xx++){
-          uint16_t px = 0xFFFF;
+          uint16_t pxl = fill;
           const int sx = xx - ox, sy = yy - oy;
           if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
             const uint32_t* a4 = acc + ((size_t)sy * dw + sx) * 4;
-            if(a4[3]){ uint32_t r = a4[0] / a4[3], g = a4[1] / a4[3], b = a4[2] / a4[3]; px = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
+            if(a4[3]){ uint32_t r = a4[0] / a4[3], g = a4[1] / a4[3], b = a4[2] / a4[3]; pxl = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
           }
-          out[yy * W + xx] = px;
+          out[yy * W + xx] = pxl;
         }
-      ok = true;
     }
   }
   if(acc) free(acc);
   if(xmap) free(xmap);
-  if(cur) free(cur);
-  if(prv) free(prv);
-  if(dict) free(dict);
-  if(dz) free(dz);
+  free(pi);
   return ok;
 }
 
@@ -323,14 +393,16 @@ static void cropRect(uint32_t sw, uint32_t sh, float crop, uint32_t& cx0, uint32
 /*  RGBA -> W x H RGB565, прозоре на білому, з усередненням пікселів.  */
 static void fitRGBA(const uint8_t* rgba, uint32_t sw0, uint32_t sh0, uint16_t* out, int W, int H, float crop = 0){
   uint32_t cx0, cy0, sw, sh;
-  cropRect(sw0, sh0, crop, cx0, cy0, sw, sh);
+  uint16_t fill = 0xFFFF;
+  if(crop < 0) yoContentBox(rgba, sw0, sh0, 4, cx0, cy0, sw, sh, &fill);   /* банер — лише сам логотип, поля — його фоном */
+  else cropRect(sw0, sh0, crop, cx0, cy0, sw, sh);
   float f = fminf((float)W / sw, (float)H / sh);
   int dw = (int)(sw * f), dh = (int)(sh * f);
   if(dw < 1) dw = 1; if(dh < 1) dh = 1;
   int ox = (W - dw) / 2, oy = (H - dh) / 2;
   for(int y = 0; y < H; y++)
     for(int x = 0; x < W; x++){
-      uint32_t r = 255, g = 255, b = 255;
+      uint32_t r = ((fill >> 11) & 31) * 255 / 31, g = ((fill >> 5) & 63) * 255 / 63, b = (fill & 31) * 255 / 31;
       int sx = x - ox, sy = y - oy;
       if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
         int x0 = sx * sw / dw, x1 = (sx + 1) * sw / dw; if(x1 <= x0) x1 = x0 + 1;
@@ -855,7 +927,7 @@ int YoLogos::_one(){
         for(uint8_t k = 0; k < no && k < 6 && result == 0; k++){
           char cu[220]; float crop = 0;
           if(order[k] < 0) snprintf(cu, sizeof(cu), "https://www.google.com/s2/favicons?domain=%s&sz=128", site);
-          else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = 1.15f; }
+          else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = -1; }   /* банер — межі логотипа */
           n = httpGet(cu, buf, LG_MAXDL);
           if(n < 0){ result = -1; break; }
           uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);

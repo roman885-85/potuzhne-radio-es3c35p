@@ -265,6 +265,8 @@ static UINT covOut(JDEC* jd, void* bitmap, JRECT* r){
 /*  Розпакувати JPEG (звичайний, не прогресивний) і вписати в W x H, зі
     збереженням пропорцій і середнім по пікселях джерела. Спільне для
     обкладинок проповідей і логотипів станцій.  */
+void yoContentBox(const uint8_t* px, uint32_t w, uint32_t h, uint8_t chans, uint32_t& cx0, uint32_t& cy0, uint32_t& cw, uint32_t& ch, uint16_t* bg565);   /* yoLogos.cpp */
+
 bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, float crop){
   bool ok = false;
   CoverCtx c = { jpg, len, 0, nullptr, 0, 0 };
@@ -279,9 +281,14 @@ bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, floa
     rgb = (uint8_t*)ps_malloc((uint32_t)c.w * c.h * 3);
     c.rgb = rgb;
     if(rgb && jd_decomp(&jd, covOut, sc) == JDR_OK){
-      /*  область джерела: уся або вирізана з середини (crop)  */
+      /*  область джерела: уся, межі логотипа на банері (crop < 0) або середина (crop > 0)  */
       int cw = c.w, ch = c.h, cx0 = 0, cy0 = 0;
-      if(crop > 0){
+      uint16_t fill = 0;                          /* поля: чорні, як і було; банер — його фоном */
+      if(crop < 0){
+        uint32_t a0, b0, aw, bh;
+        yoContentBox(rgb, c.w, c.h, 3, a0, b0, aw, bh, &fill);
+        cx0 = (int)a0; cy0 = (int)b0; cw = (int)aw; ch = (int)bh;
+      }else if(crop > 0){
         if((float)c.w / c.h > crop){ cw = (int)(c.h * crop); cx0 = (c.w - cw) / 2; }
         else{ ch = (int)(c.w / crop); cy0 = (c.h - ch) / 2; }
         if(cw < 1) cw = 1; if(ch < 1) ch = 1;
@@ -292,7 +299,7 @@ bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, floa
       int ox = (W - dw) / 2, oy = (H - dh) / 2;
       for(int y = 0; y < H; y++)
         for(int x = 0; x < W; x++){
-          uint16_t v = 0;
+          uint16_t v = fill;
           int sx = x - ox, sy = y - oy;
           if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
             int x0 = cx0 + sx * cw / dw, x1 = cx0 + (sx + 1) * cw / dw; if(x1 <= x0) x1 = x0 + 1;
