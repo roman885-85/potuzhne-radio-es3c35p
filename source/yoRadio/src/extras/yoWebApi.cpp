@@ -134,7 +134,7 @@ static void onHello(AsyncWebServerRequest* r){
   JOut o(b, sizeof(b));
   o.put('{');
   o.kn("potuzhne", 1);
-  o.ks("board", "ES3C28P");
+  o.ks("board", PR_BOARD);
   o.ks("v", prVersion());
   o.ks("build", prBuild());
   o.ks("host", config.store.mdnsname);
@@ -199,6 +199,7 @@ static void onState(AsyncWebServerRequest* r){
   o.ks("v", prVersion());
   o.ks("build", prBuild());
   o.ks("fw", prMarker());
+  o.ks("board", PR_BOARD);              /* сторінка «Про пристрій» пише, яка плата */
   bool sta = WiFi.status() == WL_CONNECTED;
   o.ks("ip", sta ? WiFi.localIP().toString().c_str() : "");
   o.ks("ssid", sta ? WiFi.SSID().c_str() : "");

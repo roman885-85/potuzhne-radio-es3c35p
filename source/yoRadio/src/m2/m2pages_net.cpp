@@ -365,7 +365,10 @@ class KbdPage : public Page {
     volatile int16_t down = -1;         /* клавіша під пальцем */
     uint32_t repT = 0, downT = 0; bool rep = false;
   private:
-    static const int16_t KY = 42, KH = 32;
+    /*  Клавіші: на 320×240 — 32×32, на 480×320 (ES3C35P) — 46×46: палець той самий,
+        а екран більший — більші й клавіші. Нижній ряд ділиться в тих самих пропорціях.  */
+    static const int16_t KY = 42, KH = (SH >= 320 ? 46 : 32), KW = (SW >= 480 ? 46 : 32);
+    static const int16_t KB_PAGE = (SW * 60) / 320, KB_SPACE_X = (SW * 64) / 320, KB_OK_X = (SW * 216) / 320;
     bool _rect(int16_t k, Rect& r) const;
     int16_t _keyAt(int16_t x, int16_t y) const;
     void _finish(bool ok);
@@ -375,11 +378,11 @@ class KbdPage : public Page {
 bool KbdPage::_rect(int16_t k, Rect& r) const {
   const int16_t by = KY + 4 * KH;
   switch(k){
-    case K_SHIFT: r = Rect(2, KY + 3 * KH, 44, KH); return true;
-    case K_BACK:  r = Rect(SW - 46, KY + 3 * KH, 44, KH); return true;
-    case K_PAGE:  r = Rect(2, by, 60, KH); return true;
-    case K_SPACE: r = Rect(64, by, 150, KH); return true;
-    case K_OK:    r = Rect(216, by, SW - 218, KH); return true;
+    case K_SHIFT: r = Rect(2, KY + 3 * KH, KW + 12, KH); return true;
+    case K_BACK:  r = Rect(SW - KW - 14, KY + 3 * KH, KW + 12, KH); return true;
+    case K_PAGE:  r = Rect(2, by, KB_PAGE, KH); return true;
+    case K_SPACE: r = Rect(KB_SPACE_X, by, KB_OK_X - KB_SPACE_X - 2, KH); return true;
+    case K_OK:    r = Rect(KB_OK_X, by, SW - KB_OK_X - 2, KH); return true;
     case K_EYE:   r = Rect(SW - 52, 2, 44, 34); return true;
   }
   if(k < 0 || k >= 64) return false;
@@ -387,9 +390,9 @@ bool KbdPage::_rect(int16_t k, Rect& r) const {
   const char* s = KB[page][row];
   uint8_t len = strlen(s);
   if(c >= len) return false;
-  int16_t kw = 32, x0;
-  if(row == 3){ kw = (SW - 96) / len; if(kw > 32) kw = 32; x0 = 48 + (SW - 96 - kw * len) / 2; }
-  else x0 = (SW - len * 32) / 2;
+  int16_t kw = KW, x0;
+  if(row == 3){ const int16_t side = KW + 16; kw = (SW - 2 * side) / len; if(kw > KW) kw = KW; x0 = side + (SW - 2 * side - kw * len) / 2; }
+  else x0 = (SW - len * KW) / 2;
   r = Rect(x0 + c * kw, KY + row * KH, kw, KH);
   return true;
 }
@@ -397,9 +400,9 @@ bool KbdPage::_rect(int16_t k, Rect& r) const {
 int16_t KbdPage::_keyAt(int16_t x, int16_t y) const {
   if(y < KY){ return (pass && x >= SW - 56) ? K_EYE : -1; }
   int row = (y - KY) / KH; if(row > 4) row = 4;
-  if(row == 4) return x < 63 ? K_PAGE : x < 215 ? K_SPACE : K_OK;
-  if(row == 3 && x < 47) return K_SHIFT;
-  if(row == 3 && x >= SW - 47) return K_BACK;
+  if(row == 4) return x < KB_SPACE_X - 1 ? K_PAGE : x < KB_OK_X - 1 ? K_SPACE : K_OK;
+  if(row == 3 && x < KW + 15) return K_SHIFT;
+  if(row == 3 && x >= SW - KW - 15) return K_BACK;
   const char* s = KB[page][row];
   uint8_t len = strlen(s);
   Rect r0;

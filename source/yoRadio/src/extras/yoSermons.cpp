@@ -313,7 +313,9 @@ void YoSermons::_coverTask(void* arg){
   YoSermons* s = (YoSermons*)arg;
   /*  чекаємо, поки звільниться пам'ять: зупинка потоку, пошук логотипа  */
   for(int i = 0; i < 30 && player.status() == PLAYING; i++) vTaskDelay(pdMS_TO_TICKS(100));
-  for(int i = 0; i < 80 && logos.busy(); i++) vTaskDelay(pdMS_TO_TICKS(100));
+  /*  логотипи: прохід по станціях стане перед наступною (hold), поточний запит — дочекатись (до 30 с)  */
+  logos.hold(true);
+  for(int i = 0; i < 300 && logos.netBusy(); i++) vTaskDelay(pdMS_TO_TICKS(100));
   while(true){
     int16_t idx = s->_coverWant;
     const Sermon* it = s->at(idx);
@@ -358,6 +360,7 @@ void YoSermons::_coverTask(void* arg){
   }
   /*  обкладинка є (або не вийшло) — тепер звук  */
   if(s->_playAfterCover){ s->_playAfterCover = false; player.sendCommand({PR_BURL, 0}); }
+  logos.hold(false);                     /* прохід по станціях — далі */
   s->_coverBusy = false;
   vTaskDelete(nullptr);
 }

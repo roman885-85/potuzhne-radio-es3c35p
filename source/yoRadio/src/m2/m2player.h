@@ -34,13 +34,14 @@ class Player {
     void onRelease(int16_t x, int16_t y);
   private:
     volatile bool _shown = false;
-    uint32_t _dirty[15] = { 0 };
+    uint32_t _dirty[TROWS] = { 0 };
     portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;
     uint16_t* _bg = nullptr;             /* тло з підсвіткою кольором логотипа (PSRAM) */
     uint16_t  _bgColor = 0xFFFF;
     uint16_t* _logo = nullptr;           /* логотип 58×58 */
     bool      _logoOk = false;
     uint32_t  _logoKey = 0xFFFFFFFF;
+    uint32_t  _logoRetryT = 0;           /* пошук логотипа не почався — коли спробувати знову */
     uint16_t  _glow = 0;
     uint16_t* _favPix[6] = { nullptr };   /* логотипи обраного 26×26 */
     bool      _favOk[6] = { false };

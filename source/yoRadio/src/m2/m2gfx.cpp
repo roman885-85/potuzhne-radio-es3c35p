@@ -1,6 +1,12 @@
 #include "m2gfx.h"
 #include "m2simd.h"
 #include "m2lang.h"
+/*  Збирається з O2 (уся прошивка — -Os): малювання смугами викликає ці функції для кожної
+    смуги, і в -Os суми й тимчасові частіше лежать у стеку, ніж у регістрах. Узято з
+    передатчика hearing-link (там з 3.05), де так само малює m2gfx на ESP32-S3.  */
+#ifdef ARDUINO
+#pragma GCC optimize("O2")
+#endif
 
 namespace m2 {
 
@@ -54,7 +60,7 @@ uint16_t toCp1251(const char* s, uint8_t* out, uint16_t cap){
 /*  ---------- основа ---------- */
 void Gfx::target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh){
   _px = px; _tx = sx; _ty = sy; _tw = sw; _th = sh;
-  _ox = 0; _oy = 0;
+  _ox = 0; _oy = 0; _oxP = 0; _oyP = 0;
   unclip();
 }
 
@@ -81,8 +87,7 @@ uint16_t Gfx::blend(uint16_t bg, uint16_t fg, uint8_t a){
   return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-void Gfx::fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c){
-  int16_t x0 = x + _ox, y0 = y + _oy, x1 = x0 + w, y1 = y0 + h;
+void Gfx::_fillP(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c){
   if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
   if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
   if(x1 <= x0 || y1 <= y0) return;
@@ -91,9 +96,13 @@ void Gfx::fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c){
     sFill(_px + (int32_t)(yy - _ty) * _tw + (x0 - _tx), n, c);
 }
 
+void Gfx::fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c){
+  _fillP(_px0(x), _py0(y), _px0(x + w), _py0(y + h), c);
+}
+
 void Gfx::blit(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px){
   if(!px) return;
-  const int16_t sx0 = x + _ox, sy0 = y + _oy;
+  const int16_t sx0 = _px0(x), sy0 = _py0(y);
   int16_t x0 = sx0, y0 = sy0, x1 = sx0 + w, y1 = sy0 + h;
   if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
   if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
@@ -104,7 +113,7 @@ void Gfx::blit(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px){
 }
 
 void Gfx::fillA(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c, uint8_t a){
-  int16_t x0 = x + _ox, y0 = y + _oy, x1 = x0 + w, y1 = y0 + h;
+  int16_t x0 = _px0(x), y0 = _py0(y), x1 = _px0(x + w), y1 = _py0(y + h);
   if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
   if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
   if(x1 <= x0 || y1 <= y0) return;
@@ -128,8 +137,10 @@ void Gfx::fillA(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c, uint8_t 
 
 void Gfx::vgrad(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c0, uint16_t c1){
   if(h <= 0) return;
-  int16_t x0 = x + _ox, y0 = y + _oy, x1 = x0 + w, y1 = y0 + h;
+  int16_t x0 = _px0(x), y0 = _py0(y), x1 = _px0(x + w), y1 = _py0(y + h);
   int16_t top = y0;
+  h = y1 - y0;                                        /* висота переходу — у пікселях панелі */
+  if(h <= 0) return;
   if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
   if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
   if(x1 <= x0 || y1 <= y0) return;
@@ -180,21 +191,28 @@ static const uint8_t* cornerTable(uint8_t r){
 
 void Gfx::box(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t r, uint16_t c){
   if(w <= 0 || h <= 0) return;
+  const int16_t x0 = _px0(x), y0 = _py0(y);
+  _boxP(x0, y0, _px0(x + w) - x0, _py0(y + h) - y0, (uint8_t)uiP(r), c);
+}
+
+/*  заокруглений прямокутник у пікселях панелі  */
+void Gfx::_boxP(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t r, uint16_t c){
+  if(w <= 0 || h <= 0) return;
   if(r > w / 2) r = w / 2;
   if(r > h / 2) r = h / 2;
-  if(!visible(x, y, w, h)) return;
-  if(!r){ fill(x, y, w, h, c); return; }
-  fill(x, y + r, w, h - 2 * r, c);
-  fill(x + r, y, w - 2 * r, r, c);
-  fill(x + r, y + h - r, w - 2 * r, r, c);
+  if(x >= _cx1 || y >= _cy1 || x + w <= _cx0 || y + h <= _cy0) return;
+  if(!r){ _fillP(x, y, x + w, y + h, c); return; }
+  _fillP(x, y + r, x + w, y + h - r, c);
+  _fillP(x + r, y, x + w - r, y + r, c);
+  _fillP(x + r, y + h - r, x + w - r, y + h, c);
   const uint8_t* t = cornerTable(r);
   if(!t) return;
   for(uint8_t yy = 0; yy < r; yy++){
     for(uint8_t xx = 0; xx < r; xx++){
       uint8_t a = t[(size_t)yy * r + xx];
       if(!a) continue;
-      int16_t lx = x + _ox + xx, rx = x + _ox + w - 1 - xx;
-      int16_t ty = y + _oy + yy, by = y + _oy + h - 1 - yy;
+      int16_t lx = x + xx, rx = x + w - 1 - xx;
+      int16_t ty = y + yy, by = y + h - 1 - yy;
       _cover(lx, ty, a / 255.0f, c); _cover(rx, ty, a / 255.0f, c);
       _cover(lx, by, a / 255.0f, c); _cover(rx, by, a / 255.0f, c);
     }
@@ -219,7 +237,8 @@ void Gfx::frame(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t r, uint16_t 
 }
 
 void Gfx::circle(float cx, float cy, float r, uint16_t c){
-  float scx = cx + _ox, scy = cy + _oy;
+  float scx = _pxf(cx), scy = _pyf(cy);
+  r = uiPf(r);
   int16_t x0 = (int16_t)floorf(scx - r - 1), x1 = (int16_t)ceilf(scx + r + 1);
   int16_t y0 = (int16_t)floorf(scy - r - 1), y1 = (int16_t)ceilf(scy + r + 1);
   if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
@@ -241,8 +260,8 @@ void Gfx::circle(float cx, float cy, float r, uint16_t c){
 }
 
 void Gfx::line(float x0, float y0, float x1, float y1, float wd, uint16_t c){
-  x0 += _ox; x1 += _ox; y0 += _oy; y1 += _oy;
-  const float hw = wd / 2;
+  x0 = _pxf(x0); x1 = _pxf(x1); y0 = _pyf(y0); y1 = _pyf(y1);
+  const float hw = uiPf(wd) / 2;
   int16_t bx0 = (int16_t)floorf((x0 < x1 ? x0 : x1) - hw - 1), bx1 = (int16_t)ceilf((x0 > x1 ? x0 : x1) + hw + 1);
   int16_t by0 = (int16_t)floorf((y0 < y1 ? y0 : y1) - hw - 1), by1 = (int16_t)ceilf((y0 > y1 ? y0 : y1) + hw + 1);
   if(bx0 < _cx0) bx0 = _cx0; if(by0 < _cy0) by0 = _cy0;
@@ -262,9 +281,9 @@ void Gfx::line(float x0, float y0, float x1, float y1, float wd, uint16_t c){
 }
 
 void Gfx::arc(float cx, float cy, float r, float wd, uint16_t c, float a0, float a1){
-  cx += _ox; cy += _oy;
+  cx = _pxf(cx); cy = _pyf(cy); r = uiPf(r);
   if(a1 < a0) a1 += 360;                             /* дуга через «вгору» */
-  const float hw = wd / 2, span = a1 - a0, d2r = 0.0174533f;
+  const float hw = uiPf(wd) / 2, span = a1 - a0, d2r = 0.0174533f;
   const bool full = span >= 359.9f;
   const float e0x = cx + r * sinf(a0 * d2r), e0y = cy - r * cosf(a0 * d2r);
   const float e1x = cx + r * sinf(a1 * d2r), e1y = cy - r * cosf(a1 * d2r);
@@ -299,7 +318,7 @@ void Gfx::poly(const float* xy, uint8_t n, uint16_t c){
   float p[48];
   float mnx = 1e9f, mxx = -1e9f, mny = 1e9f, mxy = -1e9f;
   for(uint8_t i = 0; i < n; i++){
-    p[2 * i] = xy[2 * i] + _ox; p[2 * i + 1] = xy[2 * i + 1] + _oy;
+    p[2 * i] = _pxf(xy[2 * i]); p[2 * i + 1] = _pyf(xy[2 * i + 1]);
     if(p[2 * i] < mnx) mnx = p[2 * i]; if(p[2 * i] > mxx) mxx = p[2 * i];
     if(p[2 * i + 1] < mny) mny = p[2 * i + 1]; if(p[2 * i + 1] > mxy) mxy = p[2 * i + 1];
   }
@@ -328,8 +347,9 @@ void Gfx::poly(const float* xy, uint8_t n, uint16_t c){
 
 void Gfx::lighten(const Rect& area, uint8_t r, float cx, float cy, float rad, uint8_t a, uint16_t c){
   if(!a || rad <= 0) return;
-  int16_t x0 = area.x + _ox, y0 = area.y + _oy, x1 = x0 + area.w, y1 = y0 + area.h;
-  float scx = cx + _ox, scy = cy + _oy;
+  int16_t x0 = _px0(area.x), y0 = _py0(area.y), x1 = _px0(area.x + area.w), y1 = _py0(area.y + area.h);
+  float scx = _pxf(cx), scy = _pyf(cy);
+  rad = uiPf(rad); r = (uint8_t)uiP(r);
   int16_t bx0 = x0 > _cx0 ? x0 : _cx0, by0 = y0 > _cy0 ? y0 : _cy0;
   int16_t bx1 = x1 < _cx1 ? x1 : _cx1, by1 = y1 < _cy1 ? y1 : _cy1;
   const uint8_t* t = cornerTable(r);
@@ -353,22 +373,50 @@ void Gfx::lighten(const Rect& area, uint8_t r, float cx, float cy, float rad, ui
 }
 
 void Gfx::image(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px, uint8_t r){
-  if(!px || !visible(x, y, w, h)) return;
-  const uint8_t* t = r ? cornerTable(r) : nullptr;
-  int16_t sx0 = x + _ox, sy0 = y + _oy;
-  for(int16_t yy = 0; yy < h; yy++){
-    int16_t sy = sy0 + yy;
+  if(!px || w <= 0 || h <= 0 || !visible(x, y, w, h)) return;
+  /*  Куди лягає — у пікселях панелі. Якщо розмір той самий (ES3C28P), пікселі
+      кладуться як є; інакше (ES3C35P, ×4/3) — білінійне розтягування.  */
+  const int16_t dx0 = _px0(x), dy0 = _py0(y), dw = _px0(x + w) - dx0, dh = _py0(y + h) - dy0;
+  if(dw <= 0 || dh <= 0) return;
+  const uint8_t rr = (uint8_t)uiP(r);
+  const uint8_t* t = rr ? cornerTable(rr) : nullptr;
+  const bool same = (dw == w && dh == h);
+  const float kx = (float)w / dw, ky = (float)h / dh;
+  for(int16_t yy = 0; yy < dh; yy++){
+    const int16_t sy = dy0 + yy;
     if(sy < _cy0 || sy >= _cy1) continue;
     uint16_t* row = _px + (int32_t)(sy - _ty) * _tw;
-    for(int16_t xx = 0; xx < w; xx++){
-      int16_t sx = sx0 + xx;
+    int16_t y0s = yy, y1s = yy; uint16_t ay = 0;
+    if(!same){
+      float fy = (yy + 0.5f) * ky - 0.5f; if(fy < 0) fy = 0;
+      y0s = (int16_t)fy; if(y0s > h - 1) y0s = h - 1;
+      y1s = y0s + 1 < h ? y0s + 1 : y0s;
+      ay = (uint16_t)((fy - y0s) * 256);
+    }
+    for(int16_t xx = 0; xx < dw; xx++){
+      const int16_t sx = dx0 + xx;
       if(sx < _cx0 || sx >= _cx1) continue;
-      uint16_t v = px[(int32_t)yy * w + xx];
+      uint16_t v;
+      if(same) v = px[(int32_t)yy * w + xx];
+      else{
+        float fx = (xx + 0.5f) * kx - 0.5f; if(fx < 0) fx = 0;
+        int16_t x0s = (int16_t)fx; if(x0s > w - 1) x0s = w - 1;
+        const int16_t x1s = x0s + 1 < w ? x0s + 1 : x0s;
+        const uint16_t ax = (uint16_t)((fx - x0s) * 256);
+        const uint16_t p00 = px[(int32_t)y0s * w + x0s], p01 = px[(int32_t)y0s * w + x1s];
+        const uint16_t p10 = px[(int32_t)y1s * w + x0s], p11 = px[(int32_t)y1s * w + x1s];
+        auto ch = [&](uint8_t sh, uint16_t m) -> uint16_t {
+          const uint32_t a = (p00 >> sh) & m, b = (p01 >> sh) & m, c2 = (p10 >> sh) & m, d = (p11 >> sh) & m;
+          const uint32_t top = a * (256 - ax) + b * ax, bot = c2 * (256 - ax) + d * ax;
+          return (uint16_t)(((top * (256 - ay) + bot * ay) + 32768) >> 16);
+        };
+        v = (uint16_t)((ch(11, 31) << 11) | (ch(5, 63) << 5) | ch(0, 31));
+      }
       if(t){
-        int16_t cx = xx < r ? xx : (w - 1 - xx < r ? w - 1 - xx : -1);
-        int16_t cy = yy < r ? yy : (h - 1 - yy < r ? h - 1 - yy : -1);
+        const int16_t cx = xx < rr ? xx : (dw - 1 - xx < rr ? dw - 1 - xx : -1);
+        const int16_t cy = yy < rr ? yy : (dh - 1 - yy < rr ? dh - 1 - yy : -1);
         if(cx >= 0 && cy >= 0){
-          uint8_t a = t[(size_t)cy * r + cx];
+          const uint8_t a = t[(size_t)cy * rr + cx];
           if(!a) continue;
           row[sx - _tx] = blend(row[sx - _tx], v, a);
           continue;
@@ -380,8 +428,7 @@ void Gfx::image(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px, 
 }
 
 /*  ---------- текст ---------- */
-void Gfx::_glyphs(int16_t x, int16_t baseline, const uint8_t* cp, uint16_t n, const GFXfont* f, uint16_t c){
-  int16_t sx = x + _ox, sb = baseline + _oy;
+void Gfx::_glyphs(int16_t sx, int16_t sb, const uint8_t* cp, uint16_t n, const GFXfont* f, uint16_t c){
   /*  рядок цілком поза смугою — не рахуємо навіть гліфів  */
   if(sb - (int16_t)f->yAdvance > _cy1 || sb + (int16_t)f->yAdvance / 2 < _cy0) return;
   for(uint16_t i = 0; i < n; i++){
@@ -431,18 +478,19 @@ static int16_t cpWidth(const uint8_t* cp, uint16_t n, const GFXfont* f){
 int16_t Gfx::textW(const char* s, const GFXfont* f){
   uint8_t cp[160];
   uint16_t n = toCp1251(s, cp, sizeof(cp));
-  return cpWidth(cp, n, f);
+  return uiL(cpWidth(cp, n, f));                 /* шрифт — у пікселях панелі, ширина — логічна */
 }
 
-int16_t Gfx::text(int16_t x, int16_t baseline, const char* s, const GFXfont* f, uint16_t c, uint8_t align, int16_t maxw){
+int16_t Gfx::text(int16_t x, int16_t baseline, const char* s, const GFXfont* f, uint16_t c, uint8_t align, int16_t maxw_l){
   if(!s || !f) return 0;
   uint8_t cp[160];
   uint16_t n = toCp1251(s, cp, sizeof(cp) - 2);
-  int16_t w = cpWidth(cp, n, f);
+  int16_t w = cpWidth(cp, n, f);                 /* пікселі панелі */
+  const int16_t maxw = maxw_l > 0 ? uiP(maxw_l) : 0;
   /*  рядок цілком поза смугою (сторінка малюється смугами, і більшість викликів
       сюди не влучає) — ширину вже знаємо, решту не рахуємо  */
-  const int16_t sb = baseline + _oy;
-  if(sb - (int16_t)f->yAdvance > _cy1 || sb + (int16_t)f->yAdvance / 2 < _cy0) return maxw > 0 && w > maxw ? maxw : w;
+  const int16_t sb = _py0(baseline);
+  if(sb - (int16_t)f->yAdvance > _cy1 || sb + (int16_t)f->yAdvance / 2 < _cy0) return uiL(maxw > 0 && w > maxw ? maxw : w);
   if(maxw > 0 && w > maxw){
     /*  обрізаємо по місцю й ставимо «…» (ширину віднімаємо по літері, а не рахуємо щоразу наново)  */
     const int16_t ell = cpWidth((const uint8_t*)"\x85", 1, f);
@@ -452,9 +500,10 @@ int16_t Gfx::text(int16_t x, int16_t baseline, const char* s, const GFXfont* f, 
     cp[n++] = 0x85; cp[n] = 0;
     w += ell;
   }
-  int16_t xx = align == AL_C ? x - w / 2 : align == AL_R ? x - w : x;
-  _glyphs(xx, baseline, cp, n, f, c);
-  return w;
+  const int16_t px = _px0(x);
+  int16_t xx = align == AL_C ? px - w / 2 : align == AL_R ? px - w : px;
+  _glyphs(xx, sb, cp, n, f, c);
+  return uiL(w);
 }
 
 }  // namespace m2

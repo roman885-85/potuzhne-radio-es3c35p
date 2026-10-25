@@ -1,30 +1,24 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-#  Прошивка «ПОТУЖНЕ РАДІО» в плату ES3C28P (ESP32-S3, 16 МБ flash).
+#  Прошивка «ПОТУЖНЕ РАДІО» в плату ES3C35P (ESP32-S3, 16 МБ flash) по USB.
 #
-#  У платы НЕТ микросхемы USB-UART: Type-C идёт напрямую в ESP32-S3.
-#  Поэтому перед прошивкой её надо вручную перевести в режим загрузки:
-#     1. отсоедините кабель;
-#     2. зажмите и держите кнопку BOOT;
-#     3. вставьте кабель;
-#     4. отпустите BOOT.
-#  В системе появится новый порт /dev/cu.usbmodemXXXX — его и берём.
+#  У плати немає мікросхеми USB-UART: Type-C іде прямо в ESP32-S3, у режим
+#  завантаження вона входить сама (кнопку BOOT тримати не треба).
+#  Після запису плата лишається в завантажувачі (на цьому Mac піднятий DTR
+#  засувує GPIO0) — тому перезапуск робимо самі: RTS 0→1→0 при DTR=0
+#  (tools/es3c35p/con.py --reset).
 #
-#  Использование:
-#     ./flash.sh                 — залить всё одним образом (по умолчанию)
-#     ./flash.sh /dev/cu.usbmodem1101
-#     ./flash.sh --app-only      — обновить только программу, настройки и
-#                                  список станций в SPIFFS не трогать
-#     ./flash.sh --app-only --assets — то же и раздел ресурсов (звуки,
-#                                  заставка) вместе с таблицей разделов;
-#                                  станции, сети и настройки не трогаются
+#  Використання:
+#     ./flash.sh                 — увесь образ (налаштування й станції — заводські!)
+#     ./flash.sh --app-only      — лише програма: мережі, станції й налаштування лишаються
+#     ./flash.sh --app-only --assets — те саме й розділ ресурсів (звуки, заставка)
+#     ./flash.sh … /dev/cu.usbmodemXXXX — інший порт
 # ---------------------------------------------------------------------------
 set -e
 cd "$(dirname "$0")"
+B=ES3C35P
 
-APP_ONLY=0
-ASSETS=0
-PORT=""
+APP_ONLY=0; ASSETS=0; PORT=""
 for a in "$@"; do
   case "$a" in
     --app-only) APP_ONLY=1 ;;
@@ -34,43 +28,26 @@ for a in "$@"; do
 done
 
 ESPTOOL=$(ls -d "$HOME"/Library/Arduino15/packages/esp32/tools/esptool_py/*/esptool 2>/dev/null | sort -V | tail -1)
-if [ ! -x "$ESPTOOL" ]; then
-  if command -v esptool.py >/dev/null; then ESPTOOL=esptool.py
-  elif command -v esptool >/dev/null; then ESPTOOL=esptool
-  else echo "esptool не найден. Поставьте: pip3 install esptool"; exit 1; fi
-fi
+[ -x "$ESPTOOL" ] || { echo "esptool не знайдено (ядро Arduino ESP32)"; exit 1; }
+[ -n "$PORT" ] || PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
+[ -n "$PORT" ] || { echo "Порт /dev/cu.usbmodem* не знайдено — плата підключена?"; exit 1; }
+echo "esptool: $ESPTOOL"; echo "порт:    $PORT"
 
-if [ -z "$PORT" ]; then
-  PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
-fi
-if [ -z "$PORT" ]; then
-  echo "Порт не найден. Переведите плату в режим загрузки — см. шапку файла."
-  exit 1
-fi
-echo "esptool: $ESPTOOL"
-echo "порт:    $PORT"
-echo
+#  Мітка прошивки мусить бути для ЦІЄЇ плати: прошивка ES3C28P на ES3C35P
+#  керувала б не тими виводами.
+F="PotuzhneRadio-$B-update.bin"
+[ -f "$F" ] || { echo "немає $F — спершу ./rebuild.sh"; exit 1; }
+grep -a -q "POTUZHNE-RADIO-FW|$B|" "$F" || { echo "$F зібрано не для $B — не шию"; exit 1; }
 
-#  Разом із програмою пишемо й boot_app0.bin у розділ otadata: після оновлення
-#  через сторінку радіо вантажиться з другого розділу (app1), і нова програма
-#  в app0 без цього так і лежала б невживана.
+COMMON=(--chip esp32s3 --port "$PORT" --baud 921600 --before default-reset --after no-reset write-flash -z --flash-mode dio --flash-freq 80m --flash-size 16MB)
 if [ "$APP_ONLY" = "1" ]; then
   EXTRA=()
-  #  Таблиця розділів і ресурси пишуться лише в нові місця: 0x8000 і 0x820000.
-  #  Розділи зі станціями (0x610000) і налаштуваннями (nvs) лишаються як були.
-  [ "$ASSETS" = "1" ] && EXTRA=(0x8000 PotuzhneRadio-ES3C28P-partitions.bin 0x820000 PotuzhneRadio-ES3C28P-assets.bin)
-  "$ESPTOOL" --chip esp32s3 --port "$PORT" --baud 921600 \
-    --before default-reset --after hard-reset write-flash -z \
-    --flash-mode dio --flash-freq 80m --flash-size 16MB \
-    0xe000  boot_app0.bin \
-    0x10000 PotuzhneRadio-ES3C28P-update.bin "${EXTRA[@]}"
+  [ "$ASSETS" = "1" ] && EXTRA=(0x8000 "PotuzhneRadio-$B-partitions.bin" 0x820000 "PotuzhneRadio-$B-assets.bin")
+  "$ESPTOOL" "${COMMON[@]}" 0xe000 boot_app0.bin 0x10000 "$F" "${EXTRA[@]}"
 else
-  "$ESPTOOL" --chip esp32s3 --port "$PORT" --baud 921600 \
-    --before default-reset --after hard-reset write-flash -z \
-    --flash-mode dio --flash-freq 80m --flash-size 16MB \
-    0x0 PotuzhneRadio-ES3C28P-full.bin
+  "$ESPTOOL" "${COMMON[@]}" 0x0 "PotuzhneRadio-$B-full.bin"
 fi
 
-echo
-echo "Готово. Отсоедините и снова подключите кабель — плата стартует сама."
-echo "Если Wi-Fi ещё не задан: коснитесь экрана радио и выберите сеть из списка."
+echo ">>> перезапуск"
+python3 "$(dirname "$0")/../tools/es3c35p/con.py" --reset --wait 3 > /dev/null 2>&1 || true
+echo "Готово. Якщо Wi-Fi ще не задано — торкніться екрана радіо й виберіть мережу зі списку."

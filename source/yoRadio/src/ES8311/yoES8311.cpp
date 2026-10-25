@@ -116,6 +116,8 @@ bool es8311_mute(bool mute) {
 }
 
 bool es8311_ready() { return _ready; }
+int  es8311_id(){ uint8_t v = 0; return rd(ES8311_CHD1_REGFD, v) ? (int)v : -1; }
+uint32_t es8311_rate(){ return _rate; }
 
 /*  Читаємо назад те, що самі записали: якщо кодек живий і налаштований,
     регістри збігатимуться з очікуваними.  */

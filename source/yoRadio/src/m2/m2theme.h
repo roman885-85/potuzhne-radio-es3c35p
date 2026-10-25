@@ -2,16 +2,41 @@
 #ifndef m2theme_h
 #define m2theme_h
 #include <Arduino.h>
-#include "../displays/fonts/aa/m2Title.h"
-#include "../displays/fonts/aa/m2Big.h"
-#include "../displays/fonts/aa/m2Mid.h"
-#include "../displays/fonts/aa/m2Row.h"
-#include "../displays/fonts/aa/m2RowB.h"
-#include "../displays/fonts/aa/m2Sm.h"
-#include "../displays/fonts/aa/m2SmB.h"
-#include "../displays/fonts/aa/m2Key.h"
-#include "../displays/fonts/aa/aaUI6.h"
-#include "../displays/fonts/aa/aaUI26b.h"
+#include "../core/options.h"
+/*  Масштаб інтерфейсу. Сторінки малюють у «логічних» пікселях — сітці старого
+    екрана заввишки 240, — а Gfx (m2gfx.cpp) переводить їх у пікселі панелі.
+    ES3C28P: 1:1 (320×240). ES3C35P: 4/3 — логічно 360×240, панель 480×320.
+    Так увесь інтерфейс — шрифти, кнопки, відступи — стає на третину більшим,
+    у тих самих пропорціях, а сторінки переписувати не треба.  */
+#if DSP_H >= 320
+  #define UI_KN 4
+  #define UI_KD 3
+  #include "../displays/fonts/aa/m2TitleL.h"
+  #include "../displays/fonts/aa/m2BigL.h"
+  #include "../displays/fonts/aa/m2MidL.h"
+  #include "../displays/fonts/aa/m2RowL.h"
+  #include "../displays/fonts/aa/m2RowBL.h"
+  #include "../displays/fonts/aa/m2SmL.h"
+  #include "../displays/fonts/aa/m2SmBL.h"
+  #include "../displays/fonts/aa/m2KeyL.h"
+  #include "../displays/fonts/aa/m2ClockL.h"
+  #include "../displays/fonts/aa/aaUI6L.h"
+  #include "../displays/fonts/aa/aaUI26bL.h"
+#else
+  #define UI_KN 1
+  #define UI_KD 1
+  #include "../displays/fonts/aa/m2Title.h"
+  #include "../displays/fonts/aa/m2Big.h"
+  #include "../displays/fonts/aa/m2Mid.h"
+  #include "../displays/fonts/aa/m2Row.h"
+  #include "../displays/fonts/aa/m2RowB.h"
+  #include "../displays/fonts/aa/m2Sm.h"
+  #include "../displays/fonts/aa/m2SmB.h"
+  #include "../displays/fonts/aa/m2Key.h"
+  #include "../displays/fonts/aa/m2Clock.h"
+  #include "../displays/fonts/aa/aaUI6.h"
+  #include "../displays/fonts/aa/aaUI26b.h"
+#endif
 
 namespace m2 {
 
@@ -39,13 +64,43 @@ const uint16_t C_PINK   = RGB(255, 99, 160);
 const uint16_t C_GREEN  = RGB(70, 200, 110);
 const uint16_t C_REC    = RGB(235, 60, 60);
 
-const int16_t SW = 320, SH = 240;
+/*  Панель (фізичні пікселі, плата: myoptions.h) і логічна сітка сторінок.  */
+const int16_t PSW = DSP_W, PSH = DSP_H;
+const int16_t SW = DSP_W * UI_KD / UI_KN, SH = DSP_H * UI_KD / UI_KN;
+/*  Брудні ділянки екрана рахуються плитками 16×16 у пікселях ПАНЕЛІ:
+    рядок плиток — біти uint32_t.  */
+const int16_t TCOLS = (PSW + 15) / 16, TROWS = (PSH + 15) / 16;
+static_assert(TCOLS <= 32, "рядок плиток має вміщатись у uint32_t");
+/*  Логічні → пікселі панелі (до найближчого — краї сусідніх прямокутників
+    збігаються), дробові — для згладжених фігур; і назад — для дотиків.  */
+constexpr int16_t uiP(int32_t v){
+  return UI_KN == UI_KD ? (int16_t)v
+       : (int16_t)(v >= 0 ? (v * UI_KN + UI_KD / 2) / UI_KD : -((-v * UI_KN + UI_KD / 2) / UI_KD));
+}
+constexpr float   uiPf(float v){ return v * (float)UI_KN / (float)UI_KD; }
+constexpr int16_t uiPfloor(int32_t v){ return (int16_t)(v >= 0 ? v * UI_KN / UI_KD : -((-v * UI_KN + UI_KD - 1) / UI_KD)); }
+constexpr int16_t uiPceil(int32_t v){ return (int16_t)(v >= 0 ? (v * UI_KN + UI_KD - 1) / UI_KD : -((-v * UI_KN) / UI_KD)); }
+constexpr int16_t uiL(int32_t v){ return UI_KN == UI_KD ? (int16_t)v : (int16_t)((v * UI_KD + UI_KN / 2) / UI_KN); }
 const int16_t HDR = 40;                        /* шапка */
 const int16_t CH = SH - HDR;                   /* висота вмісту */
 const int16_t MX = 10;                         /* поля карток */
 const int16_t CWID = SW - 2 * MX;              /* ширина картки */
 const uint8_t R_CARD = 12, R_BTN = 10, R_BADGE = 7;
 
+#if UI_KN != UI_KD
+/*  шрифти вже в пікселях панелі (×4/3): Gfx міряє їх і перераховує ширину в логічні  */
+#define F_TITLE (&m2TitleL)
+#define F_BIG   (&m2BigL)
+#define F_MID   (&m2MidL)
+#define F_ROW   (&m2RowL)
+#define F_ROWB  (&m2RowBL)
+#define F_SM    (&m2SmL)
+#define F_SMB   (&m2SmBL)
+#define F_KEY   (&m2KeyL)
+#define F_TINY  (&aaUI6L)
+#define F_POP   (&aaUI26bL)
+#define F_CLOCK (&m2ClockL)
+#else
 #define F_TITLE (&m2Title)
 #define F_BIG   (&m2Big)
 #define F_MID   (&m2Mid)
@@ -56,6 +111,8 @@ const uint8_t R_CARD = 12, R_BTN = 10, R_BADGE = 7;
 #define F_KEY   (&m2Key)
 #define F_TINY  (&aaUI6)
 #define F_POP   (&aaUI26b)
+#define F_CLOCK (&m2Clock)
+#endif
 
 }  // namespace m2
 #endif

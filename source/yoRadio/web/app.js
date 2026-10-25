@@ -1518,7 +1518,7 @@ VIEWS.sound = page => {
       const s2 = d.eq.join() + d.on + d.guard + d.loud + d.roomOn + d.room.join();
       if (s2 !== sig) { sig = s2; plotSoon(); }
       if (d.rst !== rst) { if (rst === 2 && d.rst >= 3) plotSoon(); rst = d.rst; }
-      $('#dacnow').textContent = 'Зараз: ' + DACS[S.dev.dac].n + ' — ' + DACS[S.dev.dac].k;
+      $('#dacnow').textContent = 'Зараз: ' + dacOf(S.dev.dac).n + ' — ' + dacOf(S.dev.dac).k;
     }
     const s = [C.vols, C.sst].join('|');
     if ('vols' in C && s !== cs) {
@@ -1746,7 +1746,7 @@ VIEWS.system = page => {
 };
 
 /* ---------------------------------------------------------------- розробник */
-const DACS = [
+const DACS_28 = [
   { n: 'ES8311', k: 'вбудований кодек і підсилювач', d: ['Кодек ES8311 і підсилювач SC8002B на динамік плати.', 'Нічого під\'єднувати не треба. (ES8388 на цій платі немає.)'], p: [] },
   { n: 'PCM5102A', k: 'стерео ЦАП, лінійний вихід', d: ['Стерео ЦАП із лінійним виходом 3,5 мм — для підсилювача чи колонок.', 'SCK модуля — на GND, XSMT — на 3,3 В, інакше звуку не буде.'],
     p: [['5V UART', 'VIN'], ['GND UART', 'GND'], ['IO14', 'BCK'], ['IO21', 'LCK'], ['IO2', 'DIN'], ['GND I2C', 'SCK'], ['3V3 I2C', 'XSMT']] },
@@ -1757,6 +1757,21 @@ const DACS = [
   { n: 'VS1053B', k: 'окремий декодер, інша прошивка', d: ['Апаратний декодер MP3/AAC/FLAC зі своїм виходом.', 'Під\'єднується без пайки — лише роз\'єми на звороті плати. Потрібна окрема прошивка: з цією він не заграє.'],
     p: [['5V UART', '5V'], ['GND UART', 'GND'], ['IO14', 'SCK'], ['IO21', 'MOSI'], ['IO3', 'MISO'], ['IO2', 'XCS'], ['TXD0', 'XDCS'], ['RXD0', 'DREQ'], ['3V3 I2C', 'XRST']], alt: true },
 ];
+/*  ES3C35P (3,5″): ЦАП — на штатних роз'ємах 4P 1,25 мм на звороті плати:
+    Expand (P3) 1 3V3, 2 GND, 3 IO46, 4 IO45; UART (P2) 1 +5 В, 2 GND, 3 TXD0 (IO43), 4 RXD0 (IO44).
+    VS1053B під'єднати нікуди — вільних сигналів на роз'ємах лише чотири.  */
+const DACS_35 = [
+  { n: 'ES8311', k: 'вбудований кодек і підсилювач', d: ['Кодек ES8311 і підсилювач SC8002B на динамік плати.', 'Нічого під\'єднувати не треба.'], p: [] },
+  { n: 'PCM5100/5102A', k: 'стерео ЦАП, лінійний вихід', d: ['Стерео ЦАП із лінійним виходом 3,5 мм — для підсилювача чи колонок (PCM5100 і PCM5102A під\'єднуються однаково).', 'SCK модуля — на GND, XSMT — на 3,3 В, FMT — на GND (I2S), інакше звуку не буде.'],
+    p: [['5V UART', 'VIN'], ['GND UART', 'GND'], ['IO45', 'BCK'], ['IO46', 'LCK'], ['TXD0', 'DIN'], ['GND Expand', 'SCK'], ['3V3 Expand', 'XSMT']] },
+  { n: 'UDA1334A', k: 'стерео ЦАП, навушники й лінія', d: ['Стерео ЦАП із виходом на навушники й лінію.', 'Живлення від 3 до 5 В.'],
+    p: [['5V UART', 'VIN'], ['GND UART', 'GND'], ['IO45', 'BCLK'], ['IO46', 'WSEL'], ['TXD0', 'DIN']] },
+  { n: 'MAX98357A', k: 'моно підсилювач 3 Вт', d: ['Моно підсилювач класу D на динамік 4–8 Ом, до 3 Вт.', 'Виводи GAIN і SD не під\'єднувати.'],
+    p: [['5V UART', 'VIN'], ['GND UART', 'GND'], ['IO45', 'BCLK'], ['IO46', 'LRC'], ['TXD0', 'DIN']] },
+];
+const is35 = () => !!(S && S.board === 'ES3C35P');
+const dacs = () => is35() ? DACS_35 : DACS_28;
+const dacOf = i => dacs()[i] || dacs()[0];
 VIEWS.dev = page => {
   const tg = h('div'), dac = h('div'), lg = h('div');
   const snd = sfxSection();
@@ -1779,18 +1794,22 @@ VIEWS.dev = page => {
     if (sig2 !== s2) {
       s2 = sig2; dac.textContent = '';
       const cards = h('div', { class: 'dacs' });
-      DACS.forEach((x, i) => cards.append(h('button', { type: 'button', class: 'dac' + (i === sel ? ' sel' : '') + (i === d.dac ? ' cur' : ''), onclick: () => { sel = i; s2 = ''; pageLive('x'); } },
+      dacs().forEach((x, i) => cards.append(h('button', { type: 'button', class: 'dac' + (i === sel ? ' sel' : '') + (i === d.dac ? ' cur' : ''), onclick: () => { sel = i; s2 = ''; pageLive('x'); } },
         h('b', null, x.n), h('small', null, i === d.dac ? 'зараз звук іде сюди' : x.k))));
-      const x = DACS[sel];
+      const x = dacOf(sel);
       const det = h('div', { style: { marginTop: '14px' } }, h('p', { style: { margin: '0 0 4px' } }, x.d[0]), h('p', { class: 'note', style: { marginTop: 0 } }, x.d[1]));
       if (x.p.length) {
         det.append(h('table', { class: 'wire' }, h('tbody', null, h('tr', null, h('td', { class: 'gd' }, 'Плата (роз\'єм)'), h('td'), h('td', { class: 'gd' }, x.n)),
           x.p.map(([a, b]) => h('tr', null, h('td', { class: /^(5V|3V3)/.test(a) ? 'pw' : /^GND/.test(a) ? 'gd' : 'io' }, a), h('td', null, '→'), h('td', null, b))))));
         const used = new Set(x.p.map(p => p[0].replace(/ .*/, '')));
-        const HD = [['Роз\'єм розширення (Expand)', ['IO2', 'IO3', 'IO14', 'IO21']], ['Роз\'єм UART', ['TXD0', 'RXD0', 'GND', '5V']], ['Роз\'єм I2C', ['3.3V', 'GND', 'SCL', 'SDA']]];
-        const u = (hn, pin) => (pin === '3.3V' && x.p.some(p => p[0] === '3V3 I2C')) || (pin === 'GND' && x.p.some(p => p[0] === (hn.includes('UART') ? 'GND UART' : 'GND I2C'))) || (pin === '5V' && x.p.some(p => p[0] === '5V UART')) || used.has(pin);
+        const HD = is35()
+          ? [['Роз\'єм розширення (Expand, P3)', ['3V3', 'GND', 'IO46', 'IO45']], ['Роз\'єм UART (P2)', ['5V', 'GND', 'TXD0', 'RXD0']], ['Роз\'єм I2C (P4)', ['3V3', 'GND', 'SCL', 'SDA']]]
+          : [['Роз\'єм розширення (Expand)', ['IO2', 'IO3', 'IO14', 'IO21']], ['Роз\'єм UART', ['TXD0', 'RXD0', 'GND', '5V']], ['Роз\'єм I2C', ['3.3V', 'GND', 'SCL', 'SDA']]];
+        const u = is35()
+          ? (hn, pin) => { const tag = hn.includes('UART') ? 'UART' : hn.includes('I2C') ? 'I2C' : 'Expand'; return x.p.some(p => p[0] === pin || p[0] === pin + ' ' + tag); }
+          : (hn, pin) => (pin === '3.3V' && x.p.some(p => p[0] === '3V3 I2C')) || (pin === 'GND' && x.p.some(p => p[0] === (hn.includes('UART') ? 'GND UART' : 'GND I2C'))) || (pin === '5V' && x.p.some(p => p[0] === '5V UART')) || used.has(pin);
         det.append(h('div', { class: 'hdrs' }, HD.map(([n, pins]) => h('div', { class: 'hdr' }, h('b', null, n), h('ol', null, pins.map(p => h('li', { class: u(n, p) ? 'u' : '' }, p)))))),
-          h('p', { class: 'note' }, 'Усі три роз\'єми — на звороті плати, паяти не треба. Жовтим позначено виводи, які використовує цей модуль. Дроти — 1,25 мм (Expand) і 2,54 мм.'));
+          h('p', { class: 'note' }, is35() ? 'Усі три роз\'єми — 4P 1,25 мм на звороті плати, паяти не треба; виводи пронумеровано від 1 по схемі виробника. Жовтим позначено виводи, які використовує цей модуль.' : 'Усі три роз\'єми — на звороті плати, паяти не треба. Жовтим позначено виводи, які використовує цей модуль. Дроти — 1,25 мм (Expand) і 2,54 мм.'));
       }
       det.append(h('div', { class: 'bar', style: { marginTop: '12px' } },
         sel === d.dac ? h('span', { class: 'pill ok' }, 'Звук іде сюди') :
@@ -1994,9 +2013,16 @@ function otaCard() {
 /* ---------------------------------------------------------------- про пристрій */
 VIEWS.about = page => {
   const kv = h('dl', { class: 'kv' });
-  page.append(card('ПОТУЖНЕ РАДІО', kv), card(null, h('p', { class: 'note', style: { margin: 0 } }, 'Плата ES3C28P: ESP32-S3, екран 2,8″ ILI9341 із сенсором, кодек ES8311, картка пам\'яті, 16 МБ флеш, 8 МБ PSRAM.')));
+  /*  плата — з /api/state (board): ES3C28P або ES3C35P  */
+  const BOARD = {
+    ES3C28P: 'Плата ES3C28P: ESP32-S3, екран 2,8″ ILI9341 із сенсором, кодек ES8311, картка пам\'яті, 16 МБ флеш, 8 МБ PSRAM.',
+    ES3C35P: 'Плата ES3C35P: ESP32-S3, екран 3,5″ ST77922 (QSPI) із вбудованим сенсором, кодек ES8311, картка пам\'яті, 16 МБ флеш, 8 МБ PSRAM.',
+  };
+  const boardNote = h('p', { class: 'note', style: { margin: 0 } }, BOARD[(S && S.board) || 'ES3C28P'] || ('Плата ' + ((S && S.board) || '')));
+  page.append(card('ПОТУЖНЕ РАДІО', kv), card(null, boardNote));
   live(() => {
     if (!S) return;
+    if (S.board && BOARD[S.board]) boardNote.textContent = BOARD[S.board];
     const up = S.up, d = Math.floor(up / 86400);
     const rows = [
       ['Версія', `${S.v}, збірка ${S.build || '—'}`],
@@ -2007,7 +2033,7 @@ VIEWS.about = page => {
       ['Батарея', S.dev.noBat ? 'вимкнено' : S.bat.pct >= 0 ? `${S.bat.pct}% · ${(S.bat.mv / 1000).toFixed(2)} В${S.bat.chg ? ' · заряджається' : S.bat.full ? ' · заряджено' : S.bat.pwr ? ' · від USB' : ''}` : 'немає'],
       ['Пам\'ять', `${size(S.heap)} вільно, PSRAM ${size(S.psram)}`],
       ['Файлова система', `${size(S.fs.u)} з ${size(S.fs.t)}`],
-      ['Аудіовихід', DACS[S.dev.dac].n],
+      ['Аудіовихід', dacOf(S.dev.dac).n],
     ];
     /*  Сторож зависань (extras/yoHang): радіо перезапустилось саме — що саме стояло й коли.  */
     if (S.hang) rows.push(['Останнє зависання', `${S.hang}${S.hangAt ? ' · ' + new Date(S.hangAt * 1000).toLocaleString('uk-UA', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : ''} — радіо перезапустилось саме`]);

@@ -52,6 +52,7 @@ The connection tables are located here https://github.com/e2002/yoradio#connecti
 #define DSP_SSD1322     23    // 256x64   2.8'  https://aliexpress.com/item/1005003480981568.html
 #define DSP_ST7920      24    // 128x64   2.6'  https://aliexpress.com/item/32699482638.html
 #define DSP_ST7789_76   25    // 284x76   2.25' https://aliexpress.ru/item/1005009016973081.html
+#define DSP_ST77922     26    // 320x480  3.5'  QSPI, плата ES3C35P (ПОТУЖНЕ РАДІО, ландшафт 480x320)
 #define DSP_CUSTOM      101   // your display
 
 #ifndef DSP_MODEL
@@ -250,6 +251,7 @@ The connection tables are located here https://github.com/e2002/yoradio#connecti
 #define TS_MODEL_XPT2046        1
 #define TS_MODEL_GT911          2
 #define TS_MODEL_FT6336         3
+#define TS_MODEL_ST77922        4     // сенсор, вбудований у ST77922 (ES3C35P), I2C 0x55
 
 #ifndef TS_MODEL
   #define TS_MODEL              TS_MODEL_UNDEFINED

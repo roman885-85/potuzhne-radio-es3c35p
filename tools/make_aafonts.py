@@ -10,7 +10,8 @@ UiCanvas (menu/uicanvas.cpp), змішуючи з тим, що вже лежит
 Розміри підібрано під висоту великих літер нинішніх шрифтів Verdana, щоб
 розкладка сторінок не поїхала. Roboto — Apache 2.0; Oswald — OFL.
 
-  scratchpad/imgenv/bin/python3 tools/make_aafonts.py
+  python3 tools/make_aafonts.py            — шрифти ES3C28P (320×240)
+  python3 tools/make_aafonts.py --large    — шрифти ×4/3 для ES3C35P (480×320)
 """
 import os
 from PIL import Image, ImageDraw, ImageFont
@@ -41,6 +42,21 @@ SET = [
     ("m2SmB",   "Roboto-Bold.ttf",      8, 15),
     ("m2Key",   "Roboto-Regular.ttf",  12, 20),
     ("m2Clock", "Montserrat-Bold.otf", 34, 50, 0x3A),     # великий годинник плеєра: лише цифри й «:»
+]
+# ES3C35P (3,5″, 480×320): ті самі шрифти у 4/3 більші — інтерфейс там малюється в
+# «логічних» пікселях старого екрана, а Gfx переводить їх у пікселі панелі (m2gfx.cpp).
+SET_L = [
+    ("m2TitleL",  "Montserrat-Bold.otf", 16, 29),
+    ("m2BigL",    "Montserrat-Bold.otf", 29, 48, 0x3A),   # барабан часу: лише цифри, «+-:» (інакше > 64 КБ — межа GFXglyph)
+    ("m2MidL",    "Montserrat-Bold.otf", 20, 35),
+    ("m2RowL",    "Roboto-Regular.ttf",  13, 24),
+    ("m2RowBL",   "Roboto-Bold.ttf",     13, 24),
+    ("m2SmL",     "Roboto-Regular.ttf",  11, 20),
+    ("m2SmBL",    "Roboto-Bold.ttf",     11, 20),
+    ("m2KeyL",    "Roboto-Regular.ttf",  16, 27),
+    ("m2ClockL",  "Montserrat-Bold.otf", 45, 67, 0x3A),
+    ("aaUI6L",    "RobotoCondensed-Regular.ttf", 9, 16),
+    ("aaUI26bL",  "Roboto-Bold.ttf",     32, 53, 0x7E),   # клавіша над пальцем: клавіатура лише ASCII
 ]
 GAMMA = 0.85          # трохи густіші краї: дрібний світлий текст на темному інакше «худне»
 
@@ -108,5 +124,6 @@ def build(name, file, cap, yadv, last=0xFF):
     print(f"{name}: {file} {size:.1f}px, бітмапи {len(bitmaps)} байт")
 
 
-for args in SET:
+import sys
+for args in (SET_L if "--large" in sys.argv else SET):
     build(*args)

@@ -26,6 +26,8 @@ class YoSplash {
     bool      _hold = false;
     uint32_t  _holdSince = 0;
     uint8_t*  _px = nullptr;                          /* пікселі смуги, внутрішня пам'ять для DMA */
+    uint16_t* _cv = nullptr;                          /* ES3C35P: полотно кадру (PSRAM) — смуги панелі кратні 8 рядкам */
+    uint16_t  _cw = 0;                                /* ширина полотна (кратна 8) */
     void _draw(uint16_t idx);
 };
 

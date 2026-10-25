@@ -36,6 +36,15 @@
 #elif TS_MODEL==TS_MODEL_FT6336
   #include "../FT6336_Touchscreen/yoFT6336.h"
   YoFT6336 ts = YoFT6336(TS_SDA, TS_SCL, TS_INT, TS_RST);
+#elif TS_MODEL==TS_MODEL_ST77922
+  #include "../ST77922_Touch/yoST77922Touch.h"
+  YoST77922Touch ts = YoST77922Touch(TS_SDA, TS_SCL, TS_INT, TS_RST);
+#endif
+/*  FT6336 і сенсор ST77922 читаються однаково: read(), isTouched, points[], rawX/rawY  */
+#if TS_MODEL==TS_MODEL_FT6336 || TS_MODEL==TS_MODEL_ST77922
+  #define TS_I2C_PANEL 1
+#else
+  #define TS_I2C_PANEL 0
 #endif
 
 void TouchScreen::init(uint16_t w, uint16_t h){
@@ -50,11 +59,13 @@ void TouchScreen::init(uint16_t w, uint16_t h){
   /*  Тачскрину — той самий номер повороту, що й дисплею: він сам переведе
       портретні координати панелі в екранні.  */
   ts.begin(TS_FT6336_ADDR);
+#elif TS_MODEL==TS_MODEL_ST77922
+  ts.begin(0x55);
 #endif
   _width  = w;
   _height = h;
   flip();
-#if TS_MODEL==TS_MODEL_FT6336
+#if TS_I2C_PANEL
   ts.setResolution(_width, _height);
 #endif
 }
@@ -64,6 +75,9 @@ void TouchScreen::flip(){
   ts.setRotation(config.store.fliptouch?3:1);
 #elif TS_MODEL==TS_MODEL_FT6336
   ts.setRotation(config.store.fliptouch?1:3);
+#elif TS_MODEL==TS_MODEL_ST77922
+  /*  ES3C35P: звичайне положення — поворот 1 (USB праворуч), як і в картинки  */
+  ts.setRotation(config.store.fliptouch?3:1);
 #endif
 }
 
@@ -104,7 +118,7 @@ void TouchScreen::loop(){
   static bool wastouched = true;
   if(millis() - _touchdelay <= 10) return;       /* 100 разів на секунду: швидкий тик інакше губиться */
   _touchdelay = millis();
-#if TS_MODEL==TS_MODEL_FT6336
+#if TS_I2C_PANEL
   ts.read();
 #endif
   const bool istouched = _istouched();
@@ -118,7 +132,7 @@ void TouchScreen::loop(){
     wastouched = istouched;
     return;
   }
-#if TS_MODEL==TS_MODEL_FT6336
+#if TS_I2C_PANEL
   if(yoTouchLog && istouched && !wastouched && !_inject){
     uint16_t lx = ts.points[0].x, ly = ts.points[0].y;
     Serial.printf("##TOUCH#\tсирий rx=%u ry=%u -> екран x=%u y=%u\n", ts.rawX, ts.rawY, lx, ly);
@@ -141,7 +155,11 @@ void TouchScreen::loop(){
   }
 
   uint16_t x = _x, y = _y;
-  if(istouched) _point(x, y);
+  if(istouched){
+    _point(x, y);
+    /*  пікселі панелі → логічні пікселі інтерфейсу (ES3C35P: ×3/4, див. m2theme.h)  */
+    x = (uint16_t)m2::uiL(x); y = (uint16_t)m2::uiL(y);
+  }
 
   /*  Відкрите меню забирає дотики собі цілком.  */
   if(yomenu.active()){

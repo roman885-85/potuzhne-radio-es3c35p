@@ -59,6 +59,11 @@ class Page {
     /*  Службове (консоль «items»): перелік елементів для автоматичної перевірки.  */
     virtual void dump(){}
     int16_t scroll = 0;
+    /*  Та сама прокрутка в пікселях панелі — для малювання. На ES3C35P логічний
+        піксель = 4/3 панельного, і ціла логічна прокрутка рухала б список
+        нерівними кроками (1, 1, 2 пікселі). Ставить її Menu разом зі scroll;
+        якщо scroll змінили напряму, малювання бере uiP(scroll).  */
+    int16_t scrollP = 0;
 };
 
 /*  ---------- типові рядки ---------- */
@@ -227,6 +232,8 @@ class Menu {
     int16_t _pressId = -1;
     int16_t _px0 = 0, _py0 = 0, _plx = 0, _ply = 0;
     uint32_t _pressT = 0, _lastTouch = 0;
+    uint32_t _scrollEndT = 0;             /* коли відпустили палець після прокрутки */
+    int16_t  _scrollEndX = 0, _scrollEndY = 0;
     bool _held = false;
     int16_t _scroll0 = 0;
     float _vel = 0, _scrollF = 0;
@@ -260,7 +267,7 @@ class Menu {
     uint32_t _valT = 0;
     uint32_t _frameT = 0;                 /* час поточного кадру — однаковий для всіх смуг */
     /*  що перемалювати: квадрати 16×16  */
-    uint32_t _dirty[15] = { 0 };
+    uint32_t _dirty[TROWS] = { 0 };
     uint8_t  _hdrMin = 255;
 
     void _applyCmds();
@@ -268,7 +275,8 @@ class Menu {
     void _startTransition(Page* from, int8_t dir);
     void _flush();
     void _drawScene(Gfx& g);
-    void _drawPage(Gfx& g, Page* p, int16_t dx, bool overlays);
+    void _drawPage(Gfx& g, Page* p, float dx, bool overlays);   /* dx — логічний, дробовий (перехід) */
+    bool _setScroll(Page* p, float f);  /* прокрутка з дробової: логічна + у пікселях панелі; true — змінилась */
     void _drawHeader(Gfx& g, Page* p);
     void _drawCalib(Gfx& g);
     void _markRaw(int16_t x, int16_t y, int16_t w, int16_t h);

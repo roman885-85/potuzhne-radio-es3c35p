@@ -306,7 +306,7 @@ bool MyNetwork::mdnsStart(){
   MDNS.setInstanceName("ПОТУЖНЕ РАДІО");
   MDNS.addService("http", "tcp", 80);
   MDNS.addService("potuzhne", "tcp", 80);
-  MDNS.addServiceTxt("potuzhne", "tcp", "board", "ES3C28P");
+  MDNS.addServiceTxt("potuzhne", "tcp", "board", PR_BOARD);
   MDNS.addServiceTxt("potuzhne", "tcp", "ver", prVersion());
   MDNS.addServiceTxt("potuzhne", "tcp", "host", nm);
   /*  Задача mDNS від IDF створюється з пріоритетом 1 на ядрі 0 — нижче за

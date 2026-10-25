@@ -15,6 +15,7 @@
 #define m2gfx_h
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
+#include "m2theme.h"            /* масштаб інтерфейсу: uiP(), SW/SH логічні, PSW/PSH панелі */
 
 namespace m2 {
 
@@ -30,19 +31,45 @@ enum : uint8_t { AL_L = 0, AL_C = 1, AL_R = 2 };
 
 class Gfx {
   public:
-    /*  смуга екрана, в яку малюємо (px — внутрішня пам'ять, звичайний порядок байтів)  */
+    /*  Смуга екрана, в яку малюємо (px — внутрішня пам'ять, звичайний порядок
+        байтів) — у ПІКСЕЛЯХ ПАНЕЛІ. Усе інше (origin, фігури, текст, обрізання
+        через narrow/clipLocal) — у логічних пікселях сторінок; переведення —
+        тут, у Gfx (uiP із m2theme.h). На ES3C28P це 1:1.  */
     void target(uint16_t* px, int16_t sx, int16_t sy, int16_t sw, int16_t sh);
-    void origin(int16_t ox, int16_t oy){ _ox = ox; _oy = oy; }
+    /*  Зсув «локальних» координат. Логічна частина (ox/oy) — для сторінок, що
+        рахують від неї видимі рядки; у пікселі панелі зсув переводиться ОКРЕМО
+        від вмісту: позиція = uiP(локальна) + uiP(зсув). Тоді на масштабі 4/3
+        вміст сторінки при прокрутці рухається як одне ціле. Раніше рахувалось
+        uiP(локальна + зсув), і округлення залежало від прокрутки: текст,
+        картки й лінії списку на кожному кадрі розходились між собою на піксель —
+        «усе смикається й рветься» (власник, 25.10.2026). На ES3C28P (1:1) —
+        ті самі числа, що й раніше.  */
+    void origin(int16_t ox, int16_t oy){ _ox = ox; _oy = oy; _oxP = uiP(ox); _oyP = uiP(oy); }
+    /*  те саме, але зсув у пікселях панелі задано точно (плавна прокрутка й
+        перехід між сторінками — на кожен піксель панелі, а не на кожен логічний)  */
+    void originP(int16_t ox, int16_t oy, int16_t oxP, int16_t oyP){ _ox = ox; _oy = oy; _oxP = oxP; _oyP = oyP; }
     int16_t ox() const { return _ox; }
     int16_t oy() const { return _oy; }
-    /*  обрізання — у координатах екрана; перетинається зі смугою  */
+    /*  обрізання — у пікселях панелі; перетинається зі смугою  */
     void clip(int16_t x, int16_t y, int16_t w, int16_t h);
-    void clipLocal(int16_t x, int16_t y, int16_t w, int16_t h){ clip(x + _ox, y + _oy, w, h); }
+    void clipLocal(int16_t x, int16_t y, int16_t w, int16_t h){
+      const int16_t x0 = _px0(x), y0 = _py0(y);
+      clip(x0, y0, _px0(x + w) - x0, _py0(y + h) - y0);
+    }
     void unclip(){ _cx0 = _tx; _cy0 = _ty; _cx1 = _tx + _tw; _cy1 = _ty + _th; }
     /*  звузити обрізання до локального прямокутника (у межах поточного); повертає попереднє  */
     Rect narrow(int16_t x, int16_t y, int16_t w, int16_t h){
       Rect prev = clipRect();
-      int16_t x0 = x + _ox, y0 = y + _oy, x1 = x0 + w, y1 = y0 + h;
+      int16_t x0 = _px0(x), y0 = _py0(y), x1 = _px0(x + w), y1 = _py0(y + h);
+      if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
+      if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
+      if(x1 < x0) x1 = x0; if(y1 < y0) y1 = y0;
+      _cx0 = x0; _cy0 = y0; _cx1 = x1; _cy1 = y1;
+      return prev;
+    }
+    /*  те саме в пікселях панелі: межа між сторінками під час переходу  */
+    Rect narrowP(int16_t x0, int16_t y0, int16_t x1, int16_t y1){
+      Rect prev = clipRect();
       if(x0 < _cx0) x0 = _cx0; if(y0 < _cy0) y0 = _cy0;
       if(x1 > _cx1) x1 = _cx1; if(y1 > _cy1) y1 = _cy1;
       if(x1 < x0) x1 = x0; if(y1 < y0) y1 = y0;
@@ -53,8 +80,8 @@ class Gfx {
     Rect clipRect() const { return Rect(_cx0, _cy0, _cx1 - _cx0, _cy1 - _cy0); }
     /*  чи видно хоч щось із прямокутника (локальні координати)  */
     bool visible(int16_t x, int16_t y, int16_t w, int16_t h) const {
-      int16_t sx = x + _ox, sy = y + _oy;
-      return sx < _cx1 && sy < _cy1 && sx + w > _cx0 && sy + h > _cy0;
+      const int16_t sx = _px0(x), sy = _py0(y);
+      return sx < _cx1 && sy < _cy1 && _px0(x + w) > _cx0 && _py0(y + h) > _cy0;
     }
 
     void fill(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c);
@@ -72,11 +99,13 @@ class Gfx {
     void lighten(const Rect& area, uint8_t r, float cx, float cy, float rad, uint8_t a, uint16_t c = 0xFFFF);
     /*  картинка RGB565 (звичайний порядок байтів) з заокругленими кутами  */
     void image(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px, uint8_t r = 0);
-    /*  готовий прямокутник пікселів як є — без змішування й кутів (кеш рядків списку)  */
+    /*  готовий прямокутник пікселів як є — без змішування й кутів (кеш рядків списку).
+        w×h — пікселі ПАНЕЛІ (буфер, намальований Gfx у пікселях панелі); x, y — логічні.  */
     void blit(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* px);
 
-    /*  Текст UTF-8 згладженим шрифтом (fonts/aa). Повертає ширину.
-        maxw > 0 — не ширше: обрізає з «…».  */
+    /*  Текст UTF-8 згладженим шрифтом (fonts/aa). Повертає ширину (логічну).
+        maxw > 0 — не ширше: обрізає з «…». На ES3C35P шрифти вже в пікселях
+        панелі (×4/3) — ширина ділиться назад на масштаб.  */
     int16_t text(int16_t x, int16_t baseline, const char* utf8, const GFXfont* f, uint16_t c,
                  uint8_t align = AL_L, int16_t maxw = 0);
     static int16_t textW(const char* utf8, const GFXfont* f);
@@ -89,12 +118,20 @@ class Gfx {
     int16_t _tx = 0, _ty = 0, _tw = 0, _th = 0;
     int16_t _cx0 = 0, _cy0 = 0, _cx1 = 0, _cy1 = 0;
     int16_t _ox = 0, _oy = 0;
+    int16_t _oxP = 0, _oyP = 0;           /* той самий зсув у пікселях панелі */
+    /*  локальні логічні → пікселі панелі: вміст і зсув — окремо (див. origin)  */
+    inline int16_t _px0(int32_t v) const { return uiP(v) + _oxP; }
+    inline int16_t _py0(int32_t v) const { return uiP(v) + _oyP; }
+    inline float   _pxf(float v) const { return uiPf(v) + _oxP; }
+    inline float   _pyf(float v) const { return uiPf(v) + _oyP; }
+    void _fillP(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t c);   /* прямокутник у пікселях панелі */
+    void _boxP(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t r, uint16_t c);
     inline void _cover(int16_t sx, int16_t sy, float cov, uint16_t c){
       if(cov <= 0 || sx < _cx0 || sy < _cy0 || sx >= _cx1 || sy >= _cy1) return;
       uint16_t* p = _px + (int32_t)(sy - _ty) * _tw + (sx - _tx);
       *p = cov >= 1 ? c : blend(*p, c, (uint8_t)(cov * 255));
     }
-    void _glyphs(int16_t x, int16_t baseline, const uint8_t* cp, uint16_t n, const GFXfont* f, uint16_t c);
+    void _glyphs(int16_t sx, int16_t sb, const uint8_t* cp, uint16_t n, const GFXfont* f, uint16_t c);   /* пікселі панелі */
 };
 
 /*  UTF-8 → CP1251 (як у шрифтах): out має вміщати len+1.  */

@@ -27,7 +27,7 @@ const char DESC[] = R"(<?xml version="1.0" encoding="utf-8"?>
 <device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
 <friendlyName>%s</friendlyName><manufacturer>ПОТУЖНЕ РАДІО</manufacturer>
 <manufacturerURL>https://github.com/roman885-85/potuzhne-radio</manufacturerURL>
-<modelDescription>Інтернет-радіо ES3C28P</modelDescription><modelName>ПОТУЖНЕ РАДІО</modelName>
+<modelDescription>Інтернет-радіо )" PR_BOARD R"(</modelDescription><modelName>ПОТУЖНЕ РАДІО</modelName>
 <modelNumber>%s</modelNumber><serialNumber>%s</serialNumber><UDN>uuid:%s</UDN>
 <serviceList>
 <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><serviceId>urn:upnp-org:serviceId:AVTransport</serviceId><SCPDURL>/avt.xml</SCPDURL><controlURL>/ctl/avt</controlURL><eventSubURL>/evt/avt</eventSubURL></service>

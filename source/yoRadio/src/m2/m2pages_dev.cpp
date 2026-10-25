@@ -11,7 +11,14 @@
 
 namespace m2 {
 
+#if defined(PR_BOARD_ES3C35P)
+/*  ES3C35P: VS1053B під'єднати нікуди (потрібно 7 сигналів, вільних на роз'ємах — 4).  */
+static const char* const DAC_NAME[5] = { "ES8311", "PCM5100/5102A", "UDA1334A", "MAX98357A", "VS1053B" };
+static const uint8_t DAC_N = 4;
+#else
 static const char* const DAC_NAME[5] = { "ES8311", "PCM5102A", "UDA1334A", "MAX98357A", "VS1053B" };
+static const uint8_t DAC_N = 5;
+#endif
 static const char* const PWR_LBL[3] = { "вимк", "високий", "низький" };
 static const char* const DAC_KIND[5] = { "вбудований кодек і підсилювач", "стерео ЦАП, лінійний вихід",
                                          "стерео ЦАП, навушники й лінія", "моно підсилювач 3 Вт на динамік",
@@ -29,16 +36,27 @@ static Item s_devItems[] = {
   iSection("ОБЛАДНАННЯ"),
   iSwitch("Картка пам'яті", IC_CARD, C_ORANGE, [](){ return (int32_t)!extras.s.noSd; },
           [](int32_t v){ extras.s.noSd = !v; extras.changed(); if(extras.s.noSd){ recorder.stop(); if(config.getMode() == PM_SDCARD) config.changeMode(PM_WEB); } }),
+#if EXT_DAC
   iNav("Аудіовихід", IC_SPEAKER, C_TEAL, vDac, [](){ M.push(&pgDac); }),
-  iSeg("Ключ живлення модуля (IO3)", PWR_LBL, 3, [](){ return (int32_t)extras.s.dacPwr; },
+  iSeg("Ключ живлення модуля (" DAC_PWR_NAME ")", PWR_LBL, 3, [](){ return (int32_t)extras.s.dacPwr; },
        [](int32_t v){ extras.s.dacPwr = v; extras.changed(); extras.applyDac(); }),
   iNote([](){ return extras.s.dacPwr == 1
-      ? "ДОСЛІД: IO3 вмикає модуль ВИСОКИМ рівнем.\nСхема: P-канальний у розрив 5 В, затвор через 10 кОм\nна 5 В, NPN із затвора на землю, база через 10 кОм\nна IO3. Модуль гасне разом із радіо."
+      ? "ДОСЛІД: " DAC_PWR_NAME " вмикає модуль ВИСОКИМ рівнем.\nСхема: P-канальний у розрив 5 В, затвор через 10 кОм\nна 5 В, NPN із затвора на землю, база через 10 кОм\nна " DAC_PWR_NAME ". Модуль гасне разом із радіо."
       : extras.s.dacPwr == 2
-      ? "ДОСЛІД: IO3 вмикає модуль НИЗЬКИМ рівнем.\nСхема простіша: один P-канальний, витік на 3,3 В,\nзатвор прямо на IO3. Годиться модулям, яким\nвистачає 3,3 В. Модуль гасне разом із радіо."
-      : "ДОСЛІД: вимкнене радіо світить модулем — шина\n3,3 В мусить лишатись під напругою, на ній годинник\nі сенсор пробудження. IO3 може гасити модуль через\nключ. Рівень виберіть за своїм транзистором."; }, 66),
+      ? "ДОСЛІД: " DAC_PWR_NAME " вмикає модуль НИЗЬКИМ рівнем.\nСхема простіша: один P-канальний, витік на 3,3 В,\nзатвор прямо на " DAC_PWR_NAME ". Годиться модулям, яким\nвистачає 3,3 В. Модуль гасне разом із радіо."
+      : "ДОСЛІД: вимкнене радіо світить модулем — шина\n3,3 В мусить лишатись під напругою, на ній годинник\nі сенсор пробудження. " DAC_PWR_NAME " може гасити модуль через\nключ. Рівень виберіть за своїм транзистором."; }, 66),
+#endif
   iNav("Заставка й звуки", IC_NOTE, C_PINK, vSnd, [](){ M.push(&pgDevSnd); }),
   iSection("ЛОГОТИПИ СТАНЦІЙ"),
+  iButton("Завантажити всі логотипи", IC_REFRESH, [](){
+    logos.fetchAll();
+    char m[48]; snprintf(m, sizeof(m), tr("шукаю для %u станцій"), (unsigned)logos.batchTotal());
+    M.toast(m);
+  }),
+  iNote([](){ static char b[64];
+    if(logos.batchOn()) snprintf(b, sizeof(b), tr("іде: %u з %u, знайдено %u"), (unsigned)logos.batchDone(), (unsigned)logos.batchTotal(), (unsigned)logos.batchFound());
+    else snprintf(b, sizeof(b), "%s", "для всіх станцій списку, у тлі, по одній");
+    return (const char*)b; }, 22),
   iButton("Шукати логотипи знову", IC_REFRESH, [](){
     uint16_t n = logos.forget();
     char m[48]; snprintf(m, sizeof(m), tr("шукатиму знову: %u"), n);
@@ -100,13 +118,13 @@ Page& pgDevSnd = s_devSnd;
 class DacPage : public Page {
   public:
     const char* title() override { return "Аудіовихід"; }
-    int16_t height() override { return 4 + 5 * 52 + 12; }
+    int16_t height() override { return 4 + DAC_N * 52 + 12; }
     void draw(Gfx& g) override {
-      for(uint8_t i = 0; i < 5; i++){
+      for(uint8_t i = 0; i < DAC_N; i++){
         int16_t y = 4 + i * 52;
         if(!g.visible(MX, y, CWID, 52)) continue;
         bool cur = extras.s.dac == i;
-        drawCard(g, MX, y, CWID, 52, i == 0, i == 4);
+        drawCard(g, MX, y, CWID, 52, i == 0, i == DAC_N - 1);
         if(i) g.fill(MX + 50, y, CWID - 50, 1, C_LINE);
         drawBadge(g, MX + 12, y + 12, i == 4 ? IC_CHIP : IC_SPEAKER, cur ? C_TEAL : C_SURF2);
         g.text(MX + 50, y + 23, DAC_NAME[i], F_ROWB, cur ? C_TEAL : C_TXT);
@@ -117,12 +135,12 @@ class DacPage : public Page {
     void tick(uint32_t now) override { static uint32_t t = 0; static uint8_t d = 255; if(now - t > 300){ t = now; if(d != extras.s.dac){ d = extras.s.dac; M.invalAll(); } } }
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override {
       (void)x;
-      if(y < 4 || y >= 4 + 5 * 52) return -1;
+      if(y < 4 || y >= 4 + DAC_N * 52) return -1;
       int16_t i = (y - 4) / 52;
-      r = Rect(MX, 4 + i * 52, CWID, 52); radius = (i == 0 || i == 4) ? R_CARD : 0;
+      r = Rect(MX, 4 + i * 52, CWID, 52); radius = (i == 0 || i == DAC_N - 1) ? R_CARD : 0;
       return i;
     }
-    void tap(int16_t id, int16_t x, int16_t y) override { (void)x; (void)y; if(id >= 0 && id < 5){ s_dacSel = id; s_dacAlt = false; M.push(&pgDacInfo); } }
+    void tap(int16_t id, int16_t x, int16_t y) override { (void)x; (void)y; if(id >= 0 && id < DAC_N){ s_dacSel = id; s_dacAlt = false; M.push(&pgDacInfo); } }
 };
 static DacPage s_dac;
 Page& pgDac = s_dac;
@@ -177,9 +195,16 @@ void DacInfoPage::draw(Gfx& g){
     g.text(SW / 2, 183, "Назад до схеми", F_ROWB, C_TXT, AL_C);
     return;
   }
+#if defined(PR_BOARD_ES3C35P)
+  /*  ES3C35P: Expand (P3) — IO45, IO46; UART (P2) — +5 В, GND, TXD0 (IO43)  */
+  static const Pin P1[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO45","BCK"}, {"IO46","LCK"}, {"TXD0","DIN"}, {"GND Expand","SCK"}, {"3V3 Expand","XSMT"} };
+  static const Pin P2[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO45","BCLK"}, {"IO46","WSEL"}, {"TXD0","DIN"} };
+  static const Pin P3[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO45","BCLK"}, {"IO46","LRC"}, {"TXD0","DIN"} };
+#else
   static const Pin P1[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO14","BCK"}, {"IO21","LCK"}, {"IO2","DIN"}, {"GND I2C","SCK"}, {"3V3 I2C","XSMT"} };
   static const Pin P2[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO14","BCLK"}, {"IO21","WSEL"}, {"IO2","DIN"} };
   static const Pin P3[] = { {"5V UART","VIN"}, {"GND UART","GND"}, {"IO14","BCLK"}, {"IO21","LRC"}, {"IO2","DIN"} };
+#endif
   static const Pin P4[] = { {"5V UART","5V"}, {"GND UART","GND"}, {"IO14","SCK"}, {"IO21","MOSI"}, {"IO3","MISO"},
                             {"IO2","XCS"}, {"TXD0","XDCS"}, {"RXD0","DREQ"}, {"3V3 I2C","XRST"} };
   static const char* D[5][2] = {
@@ -230,7 +255,7 @@ void DacInfoPage::draw(Gfx& g){
   g.text(MX + 2, ty, D[s_dacSel][0], F_SM, C_TXT2, AL_L, CWID);
   g.text(MX + 2, ty + 14, D[s_dacSel][1], F_SM, C_TXT2, AL_L, CWID);
   if(extras.s.dacPwr && s_dacSel >= 1 && s_dacSel <= 3)
-    g.text(MX + 2, ty + 28, "Дослід: IO3 керує ключем 5 В — модуль гасне з радіо.", F_SM, C_ORANGE, AL_L, CWID);
+    g.text(MX + 2, ty + 28, "Дослід: " DAC_PWR_NAME " керує ключем 5 В — модуль гасне з радіо.", F_SM, C_ORANGE, AL_L, CWID);
   if(s_dacSel == 4){
     g.box(MX, 160, CWID, 36, 12, C_SURF2);
     g.text(SW / 2, 183, "Де ці роз'єми на платі", F_ROWB, C_TXT, AL_C);

@@ -2,7 +2,6 @@
 #include "m2player.h"
 #include "m2pages.h"
 #include "m2lang.h"
-#include "../displays/fonts/aa/m2Clock.h"
 #include <SPIFFS.h>
 #include <WiFi.h>
 #include "esp_heap_caps.h"
@@ -13,6 +12,7 @@
 #include "../core/timekeeper.h"
 #include "../displays/dspcore.h"
 #include "../displays/tools/spidma.h"
+#include "../displays/tools/lcdout.h"
 #include "m2simd.h"
 #include "../extras/yoExtras.h"
 #include "../extras/yoDlna.h"
@@ -37,7 +37,7 @@ volatile bool g_m2Draw = false;
 float m2SpecDbg[32] = { 0 };
 namespace m2 {
 
-static const int16_t STRIP = 320 * 32;
+static const int32_t STRIP = (int32_t)PSW * (LCD_PUSH_COPIES ? 16 : 32);   /* як у меню (m2ui.cpp), пікселі панелі */
 /*  розкладка  */
 static const int16_t TOP_H = 38;
 static const int16_t CARD_Y = 42, CARD_H = 74;
@@ -56,9 +56,11 @@ static uint32_t mixs(uint32_t h, const char* s){ if(s) for(; *s; s++) h = (h ^ (
 
 void Player::_mark(int16_t x, int16_t y, int16_t w, int16_t h){
   if(w <= 0 || h <= 0) return;
-  int16_t x1 = x + w - 1, y1 = y + h - 1;
+  /*  логічний прямокутник → пікселі панелі (з запасом до цілих пікселів)  */
+  int16_t x1 = uiPceil(x + w) - 1, y1 = uiPceil(y + h) - 1;
+  x = uiPfloor(x); y = uiPfloor(y);
   if(x < 0) x = 0; if(y < 0) y = 0;
-  if(x1 >= SW) x1 = SW - 1; if(y1 >= SH) y1 = SH - 1;
+  if(x1 >= PSW) x1 = PSW - 1; if(y1 >= PSH) y1 = PSH - 1;
   if(x > x1 || y > y1) return;
   int tx0 = x / 16, tx1 = x1 / 16, ty0 = y / 16, ty1 = y1 / 16;
   uint32_t bits = (((1UL << (tx1 - tx0 + 1)) - 1) << tx0);
@@ -77,17 +79,19 @@ void Player::show(){
 
 /*  ---------- тло: темний перехід і світіння кольором логотипа ---------- */
 void Player::_makeBg(uint16_t glow){
-  if(!_bg) _bg = (uint16_t*)heap_caps_malloc((size_t)SW * SH * 2, MALLOC_CAP_SPIRAM);
+  if(!_bg) _bg = (uint16_t*)heap_caps_malloc((size_t)PSW * PSH * 2, MALLOC_CAP_SPIRAM);   /* пікселі панелі */
   if(!_bg) return;
   _bgColor = glow;
   static const uint8_t BAY[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
   const int br = ((C_BG >> 11) & 31) * 255 / 31, bgc = ((C_BG >> 5) & 63) * 255 / 63, bb = (C_BG & 31) * 255 / 31;
   const int tr = ((C_BGTOP >> 11) & 31) * 255 / 31, tg = ((C_BGTOP >> 5) & 63) * 255 / 63, tb = (C_BGTOP & 31) * 255 / 31;
   const int gr = ((glow >> 11) & 31) * 255 / 31, gg = ((glow >> 5) & 63) * 255 / 63, gb = (glow & 31) * 255 / 31;
-  for(int16_t y = 0; y < SH; y++){
-    float ky = y < 110 ? 1 - y / 110.0f : 0;
-    for(int16_t x = 0; x < SW; x++){
-      float dx = (x - 50) / 190.0f, dy = (y - 30) / 150.0f;
+  const float iK = (float)UI_KD / UI_KN;               /* піксель панелі → логічний */
+  for(int16_t y = 0; y < PSH; y++){
+    const float ly = y * iK;
+    float ky = ly < 110 ? 1 - ly / 110.0f : 0;
+    for(int16_t x = 0; x < PSW; x++){
+      float dx = (x * iK - 50) / 190.0f, dy = (ly - 30) / 150.0f;
       float d = 1 - (dx * dx + dy * dy); if(d < 0) d = 0;
       float a = d * d * 0.32f;
       float r = br + (tr - br) * ky, g2 = bgc + (tg - bgc) * ky, b = bb + (tb - bb) * ky;
@@ -95,7 +99,7 @@ void Player::_makeBg(uint16_t glow){
       int dd = BAY[((y & 3) << 2) | (x & 3)];
       int rr = ((int)r * 31 + dd * 16) / 255, g6 = ((int)g2 * 63 + dd * 16) / 255, b5 = ((int)b * 31 + dd * 16) / 255;
       if(rr > 31) rr = 31; if(g6 > 63) g6 = 63; if(b5 > 31) b5 = 31;
-      _bg[(int32_t)y * SW + x] = (uint16_t)((rr << 11) | (g6 << 5) | b5);
+      _bg[(int32_t)y * PSW + x] = (uint16_t)((rr << 11) | (g6 << 5) | b5);
     }
   }
 }
@@ -121,7 +125,9 @@ void Player::_loadLogo(){
     }else if(config.station.url[0]){
       /*  логотипа ще нема — попросити пошук (як і старий плеєр), якщо минулого разу не позначили «нема»  */
       snprintf(path, sizeof(path), "/logo/%08x.no", (unsigned)key);
-      if(!SPIFFS.exists(path)) logos.want(config.station.url, config.station.name);
+      /*  не почалось (пошук іншого логотипа ще йде, мережа не готова) — спробуємо
+          ще раз за кілька секунд, а не лише коли зміниться станція  */
+      if(!SPIFFS.exists(path) && !logos.want(config.station.url, config.station.name)) _logoRetryT = millis() | 1;
     }
     if(ok){
       if(!_logo) _logo = (uint16_t*)heap_caps_malloc(LOGO * LOGO * 2, MALLOC_CAP_SPIRAM);
@@ -259,8 +265,8 @@ void Player::_drawTop(Gfx& g, uint32_t now){
   uint8_t src = (dlna.playing() || player.extOn) ? IC_SPEAKER : (player.remoteStationName ? IC_CROSS : (config.getMode() == PM_SDCARD ? IC_CARD : IC_RADIO));
   icon(g, src, 20, 19, C_ACC, C_SURF);
   /*  меню  */
-  g.circle(300, 19, 14, C_SURF);
-  icon(g, IC_MENU, 300, 19, C_TXT, C_SURF);
+  g.circle(SW - 20, 19, 14, C_SURF);
+  icon(g, IC_MENU, SW - 20, 19, C_TXT, C_SURF);
   /*  стан — праворуч наліво, кроками з таблиці ширин вище  */
   int16_t x = ST_RIGHT - W_WIFI;
   int rs = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127;
@@ -469,7 +475,7 @@ void Player::_drawClock(Gfx& g){
   bool ok = t.tm_year >= 120;
   char b[48];                                   /* кирилиця — по два байти на літеру */
   if(ok) snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min); else snprintf(b, sizeof(b), "--:--");
-  int16_t w = g.text(12, CLK_Y + 48, b, &m2Clock, C_TXT);
+  int16_t w = g.text(12, CLK_Y + 48, b, F_CLOCK, C_TXT);
   if(ok){ snprintf(b, sizeof(b), "%02d", t.tm_sec); g.text(18 + w, CLK_Y + 48, b, F_TITLE, C_TXT2); }
   const int16_t rx = SW - 14;
   if(ok){
@@ -515,7 +521,7 @@ void Player::_drawRow(Gfx& g){
   if(m == 1){
     int8_t pl = extras.favPlaying();
     for(uint8_t i = 0; i < 6; i++){
-      float cx = 30 + i * 52, cy = ROW_Y + 13;
+      float cx = 30 + i * ((SW - 60) / 5.0f), cy = ROW_Y + 13;   /* шість кружків на всю ширину */
       if(!extras.fav[i].url[0]){ g.arc(cx, cy, 12, 1.2f, C_LINE); icon(g, IC_PLUS, cx, cy, C_TXT3, C_BG); continue; }
       if(pl == (int8_t)i) g.circle(cx, cy, 15, C_ACC);
       if(_favOk[i] && _favPix[i]){ g.circle(cx, cy, 13, C_SURF); g.image((int16_t)cx - 12, (int16_t)cy - 12, 24, 24, _favPix[i], 12); }
@@ -557,9 +563,10 @@ void Player::_drawRow(Gfx& g){
   }
   /*  рівень звуку: риски, що дихають із музикою  */
   bool playing = player.status() == PLAYING;
+  const float step = (SW - 28 - 4) / 31.0f;           /* 32 риски на всю ширину (на 320 — 9,3) */
   for(uint8_t k = 0; k < 32; k++){
     float h = _specH[k] > 2 ? _specH[k] : 2;
-    float x = 14 + k * 9.3f;
+    float x = 14 + k * step;
     uint16_t c = playing ? Gfx::blend(C_SURF2, C_ACC, (uint8_t)(90 + _spec[k] * 165)) : C_SURF2;
     g.line(x, ROW_Y + 24, x, ROW_Y + 24 - h, 4.5f, c);
   }
@@ -582,7 +589,7 @@ void Player::_ripple(Gfx& g){
   if(!_rf.on) return;
   const int32_t age = (int32_t)(_frameT - _rf.t0);
   float k = age <= 0 ? 0 : age / 280.0f; if(k > 1) k = 1;
-  const float rad = 10 + 320 * (1 - (1 - k) * (1 - k) * (1 - k));   /* до найдальшого кута картки */
+  const float rad = 10 + SW * (1 - (1 - k) * (1 - k) * (1 - k));    /* до найдальшого кута картки */
   float a = 50;
   if(_rf.rel){
     const uint32_t from = _rf.up > _rf.t0 + 200 ? _rf.up : _rf.t0 + 200;
@@ -684,13 +691,13 @@ void Player::_draw(Gfx& g){
 }
 
 void Player::_flush(){
-  uint32_t rows[15];
+  uint32_t rows[TROWS];
   portENTER_CRITICAL(&_mux);
   memcpy(rows, _dirty, sizeof(rows));
   memset(_dirty, 0, sizeof(_dirty));
   portEXIT_CRITICAL(&_mux);
   bool any = false; uint8_t dirtyRows = 0;
-  for(int r = 0; r < 15; r++) if(rows[r]){ any = true; dirtyRows++; }
+  for(int r = 0; r < TROWS; r++) if(rows[r]){ any = true; dirtyRows++; }
   if(!any) return;
   /*  Повний перемальовок (перехід меню↔плеєр) копіює ~150 КБ тла з PSRAM —
       суцільним потоком це відбирало шину в декодера звуку на іншому ядрі й
@@ -699,49 +706,47 @@ void Player::_flush(){
   const bool bigRedraw = dirtyRows >= 6;
   uint8_t stripN = 0;
   /*  як у меню: половина буфера малюється, поки друга йде шиною  */
-  uint16_t* scr = (uint16_t*)spidmaScratch((size_t)STRIP * 2);
+  uint16_t* scr = (uint16_t*)lcdScratch((size_t)STRIP * 2);
   if(!scr) return;
-  const int32_t HALF = STRIP / 2;
-  uint16_t* half[2] = { scr, scr + HALF };
+  const int32_t HALF = LCD_PUSH_COPIES ? STRIP : STRIP / 2;
+  uint16_t* half[2] = { scr, LCD_PUSH_COPIES ? scr : scr + HALF };
   uint8_t hi = 0;
-  bool pending = false;
-  bool dma = spidmaOk() || spidmaBegin();
   Gfx g;
   _frameT = millis();                       /* одна мить на весь кадр: смуги виходять по черзі, а хвиля не має рватися */
   _rf.on = _ripOn; _rf.rel = _ripRel; _rf.x = _ripX; _rf.y = _ripY; _rf.t0 = _ripT0; _rf.up = _ripUpT;
   g_m2Draw = true;
-  dsp.startWrite();
-  for(int r = 0; r < 15; r++){
+  lcdBegin();
+  for(int r = 0; r < TROWS; r++){
     while(rows[r]){
       uint32_t m = rows[r];
       int s = __builtin_ctz(m), e = s;
-      while(e < 20 && ((m >> e) & 1)) e++;
+      while(e < TCOLS && ((m >> e) & 1)) e++;
       uint32_t run = (((1UL << (e - s)) - 1) << s);
       rows[r] &= ~run;
       int16_t x0 = s * 16, w = (e - s) * 16;
-      if(x0 + w > SW) w = SW - x0;
+      if(x0 + w > PSW) w = PSW - x0;
       int16_t y0 = r * 16, h = 16;
-      for(int rr = r + 1; rr < 15 && (rows[rr] & run) == run && (int32_t)w * (h + 16) <= HALF; rr++){ rows[rr] &= ~run; h += 16; }
-      if(y0 + h > SH) h = SH - y0;
-      uint16_t* buf = half[hi];
-      /*  тло — готове, із PSRAM  */
-      for(int16_t yy = 0; yy < h; yy++){
-        if(_bg) memcpy(buf + (int32_t)yy * w, _bg + (int32_t)(y0 + yy) * SW + x0, (size_t)w * 2);
-        else for(int16_t i = 0; i < w; i++) buf[(int32_t)yy * w + i] = C_BG;
+      for(int rr = r + 1; rr < TROWS && (rows[rr] & run) == run && (int32_t)w * (h + 16) <= HALF; rr++){ rows[rr] &= ~run; h += 16; }
+      if(y0 + h > PSH) h = PSH - y0;
+      /*  широкий рядок плиток — шматками по рядках (див. m2ui.cpp)  */
+      const int16_t step = lcdRowsFor(w, HALF);
+      for(int16_t yy0 = 0; yy0 < h && step > 0; yy0 += step){
+        const int16_t hh = (h - yy0 < step) ? (h - yy0) : step;
+        const int16_t ys = y0 + yy0;
+        uint16_t* buf = half[hi];
+        /*  тло — готове, із PSRAM  */
+        for(int16_t yy = 0; yy < hh; yy++){
+          if(_bg) memcpy(buf + (int32_t)yy * w, _bg + (int32_t)(ys + yy) * PSW + x0, (size_t)w * 2);
+          else for(int16_t i = 0; i < w; i++) buf[(int32_t)yy * w + i] = C_BG;
+        }
+        g.target(buf, x0, ys, w, hh);
+        _draw(g);
+        if(lcdPush(x0, ys, w, hh, buf)) hi ^= 1;
+        if(bigRedraw && (++stripN % 2) == 0){ lcdWait(); vTaskDelay(1); }
       }
-      g.target(buf, x0, y0, w, h);
-      _draw(g);
-      const uint32_t n = (uint32_t)w * h;
-      sSwap16(buf, n);
-      if(pending){ if(!spidmaWait()) dma = false; pending = false; }
-      dsp.setAddrWindow(x0, y0, w, h);
-      if(dma && spidmaStart(buf, n * 2)){ pending = true; hi ^= 1; }
-      else dsp.writePixels(buf, n, true, true);
-      if(bigRedraw && (++stripN % 2) == 0){ if(pending){ spidmaWait(); pending = false; } vTaskDelay(1); }
     }
   }
-  if(pending) spidmaWait();
-  dsp.endWrite();
+  lcdEnd();
   g_m2Draw = false;
   /*  g_m2Frames не рахуємо: головний екран оновлюється постійно (спектр), і задача
       дисплея без 10-мс сну не пускала задачу простою. Швидкий темп — лише для меню.  */
@@ -750,6 +755,7 @@ void Player::_flush(){
 void Player::render(){
   if(!_shown) return;
   uint32_t now = millis();
+  if(_logoRetryT && now - _logoRetryT > 4000){ _logoRetryT = 0; _logoKey = 0xFFFFFFFF; }   /* ще раз попросити логотип */
   _loadLogo();
   _loadFav();
   if(now - _sigT >= 250){
@@ -891,7 +897,7 @@ void Player::onPress(int16_t x, int16_t y){
   auto near = [&](int16_t cx, int16_t cy){ int32_t dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= 36 * 36; };
   if(y < TOP_H + 16){
     if(near(20, 19)) _zone = 0;
-    else if(near(300, 19)) _zone = 2;
+    else if(near(SW - 20, 19)) _zone = 2;
     else _zone = 1;
   }
   /*  Значок станції в картці — перелік станцій, одразу на тій, що грає.

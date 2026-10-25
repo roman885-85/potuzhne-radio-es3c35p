@@ -12,13 +12,20 @@
   далі; n >= 128 — (n - 126) однакових, піксель один раз.
 Кожен кадр — лише зміни відносно попереднього (квадрати 8×8, що змінились, зведені в смуги).
 
-  scratchpad/imgenv/bin/python3 tools/make_splash.py
+  python3 tools/make_splash.py            — ES3C28P: 320×156
+  python3 tools/make_splash.py --large    — ES3C35P: 480×208 (той самий рисунок ×4/3)
 """
 import math, os, struct, sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 W, H = 320, 156            # верхня частина екрана: нижче — рядок стану завантаження радіо
+# --large: ES3C35P (480×320, інтерфейс ×4/3) — малюємо в тих самих логічних пікселях
+# (ширина 360 = 480 / 4·3), а готовий кадр — 480×208, тобто все ×4/3.
+LARGE = "--large" in sys.argv
+LW, LH = (360, 156) if LARGE else (W, H)   # де малюємо (логічні пікселі)
+if LARGE:
+    W, H = 480, 208                        # що лягає в файл (пікселі панелі)
 FPS = 25
 SS = 4                     # надвибірка для згладжування
 INTRO, LOOP = 50, 50
@@ -28,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "source", "yoRadio", "assets")
 FONT = os.path.expanduser("~/Library/Fonts/Montserrat-Bold.otf")   # OFL, з українською кирилицею
 
-CX, CY = W // 2, 66        # центр значка
+CX, CY = LW // 2, 66       # центр значка (логічні пікселі)
 TEXT = "ПОТУЖНЕ РАДІО"
 
 
@@ -45,8 +52,8 @@ def arc(d, cx, cy, r, a0, a1, width, color):
 def frame(i):
     """Кадр i як RGB-масив W×H."""
     t = i / FPS
-    big = Image.new("RGB", (W * SS, H * SS), (0, 0, 0))
-    glow = Image.new("RGB", (W * SS, H * SS), (0, 0, 0))
+    big = Image.new("RGB", (LW * SS, LH * SS), (0, 0, 0))
+    glow = Image.new("RGB", (LW * SS, LH * SS), (0, 0, 0))
     dg = ImageDraw.Draw(glow)
     d = ImageDraw.Draw(big)
 
@@ -86,7 +93,7 @@ def frame(i):
         spacing = (3.0 + 5.0 * (1 - ta)) * SS
         widths = [font.getlength(ch) for ch in TEXT]
         total = sum(widths) + spacing * (len(TEXT) - 1)
-        x = (W * SS - total) / 2
+        x = (LW * SS - total) / 2
         y = (136 - 6 * (1 - ta)) * SS
         col = tuple(int(c * ta) for c in ACC)
         for ch, wch in zip(TEXT, widths):
@@ -178,7 +185,8 @@ def main():
     path = os.path.join(OUT, "splash.yan")
     open(path, "wb").write(data)
     print(f"{path}: {len(data)} байт, кадрів {len(blobs)}, найбільший кадр {max(len(b) for b in blobs)} байт")
-    gif = os.path.join(sys.argv[1] if len(sys.argv) > 1 else HERE, "splash.gif")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    gif = os.path.join(args[0] if args else HERE, "splash.gif")
     imgs = [Image.fromarray(f).resize((W * 2, H * 2), Image.NEAREST) for f in frames + frames[INTRO:]]
     imgs[0].save(gif, save_all=True, append_images=imgs[1:], duration=1000 // FPS, loop=0)
     print("перегляд:", gif)

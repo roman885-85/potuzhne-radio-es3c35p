@@ -19,14 +19,40 @@
 
 class YoLogos {
   public:
-    void     want(const char* url, const char* name);   /* з задачі дисплея */
+    bool     want(const char* url, const char* name);   /* з задачі дисплея; false — пошук не почався (зайнято, нема мережі, пам'яті) */
     uint32_t version() const { return _ver; }          /* змінюється, коли з'явився новий логотип */
     bool     busy() const { return _busy; }
     uint16_t forget();                                  /* стерти позначки «нема» — шукати знову */
     void     bump() { _ver++; }                         /* логотип змінили ззовні (веб) — перечитати */
     static uint32_t crc(const char* url);
+    /*  Усі станції списку разом (25.10.2026, прохання власника: «отдельная функция для
+        загрузок иконок, чтобы это выполнять единоразово»). По одній, у тлі, тим самим
+        пошуком; ті, що вже є або позначені «нема», пропускає. Сама — раз, коли вперше
+        з'явилась мережа (позначка /logo/all.ok); ще — кнопка в «Розробнику», команда logoall.  */
+    void     fetchAll();
+    void     loop();                                    /* з головного циклу */
+    bool     test(const char* favUrl);                  /* налагодження (logotest): скачати й розпакувати один значок */
+    /*  Обкладинка проповіді просить мережу собі: прохід по станціях чекає (hold), а вона —
+        поки скінчиться поточний запит логотипа (netBusy). Два TLS разом у пам'ять не влазять.  */
+    void     hold(bool on){ _hold = on; }
+    bool     netBusy() const;
+    bool     batchOn() const { return _bOn; }
+    uint16_t batchDone() const { return _bI; }
+    uint16_t batchTotal() const { return _bN; }
+    uint16_t batchFound() const { return _bFound; }
   private:
     volatile bool     _busy = false;
+    volatile bool     _quick = false;                   /* пошук зі списку — без паузи на підключення станції */
+    volatile bool     _bOn = false, _bPending = false;
+    volatile uint16_t _bI = 0, _bN = 0;
+    volatile uint16_t _bFound = 0, _bNet = 0;
+    uint32_t _bAgainAt = 0;                             /* коли повторити прохід (мережа підвела) */
+    volatile bool _bForget = false;                     /* перед проходом скинути позначки «нема» */
+    volatile bool _hold = false;
+    int      _one();                                    /* пошук для _url/_name (у задачі) */
+    char*    _tu = nullptr;                             /* адреса значка для test() (PSRAM) */
+    static void _testTask(void* arg);
+    static void _allTask(void* arg);
     volatile uint32_t _ver = 0;
     char     _url[200] = {0};
     char     _name[64] = {0};

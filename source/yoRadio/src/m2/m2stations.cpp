@@ -34,7 +34,11 @@ static const uint16_t MAXROWS = 660;
 struct StRow { char name[88]; char sub[48]; uint32_t crc; };
 
 static volatile bool s_req = false;
-volatile bool m2RowCache = true;          /* кеш готових рядків (команда m2cache) */
+/*  Кеш готових рядків (команда m2cache). На ES3C35P (масштаб 4/3) рядок у кеші —
+    у пікселях панелі, а Gfx зсуває вміст сторінки цілими пікселями панелі
+    (Gfx::origin), тож готовий рядок лягає точно туди ж, куди ліг би
+    намальований наново. Під час прокрутки кадр лише копіює рядки.  */
+volatile bool m2RowCache = true;
 
 class StationsPage : public Page {
   public:
@@ -76,7 +80,7 @@ class StationsPage : public Page {
     void _loadLogo(uint16_t i);
     /*  Намальований рядок (без рисок спектра) — у пам'яті: під час прокрутки кадр
         лише копіює готові рядки, а не малює наново літери й логотипи.  */
-    struct Slot { int32_t idx = -1; uint32_t sig = 0; uint32_t used = 0; uint16_t* px = nullptr; };
+    struct Slot { int32_t idx = -1; uint32_t sig = 0; uint32_t used = 0; uint16_t* px = nullptr; };   /* px — пікселі панелі */
     static const uint8_t SLOTS = 10;
     Slot _slot[SLOTS];
     uint32_t _useN = 0, _gen = 0;
@@ -243,6 +247,9 @@ void StationsPage::enter(){
 
 bool StationsPage::_step(){
   if(!_active || !_n) return false;
+  /*  з'явився новий логотип (пошук по всіх станціях іде у тлі) — рядки «нема» перевірити ще раз  */
+  static uint32_t lv = 0;
+  if(logos.version() != lv){ lv = logos.version(); for(uint16_t i = 0; i < _n; i++) if(_lst[i] == 2) _lst[i] = 0; }
   int16_t sc = scroll;
   int32_t first = (sc - TOP) / RH - 4; if(first < 0) first = 0;
   int32_t last = first + CH / RH + 8; if(last > (int32_t)_n - 1) last = _n - 1;
@@ -349,6 +356,9 @@ const uint16_t* StationsPage::_cached(int32_t i, int16_t y, bool on, bool playin
   if(r.crc) for(uint8_t k = 0; k < FAV_N; k++) if(_favCrc[k] == r.crc) fav = true;
   uint32_t sig = _gen * 2654435761UL ^ r.crc;
   sig = sig * 31 + (on ? 1 : 0) + (on && playing ? 2 : 0) + (fav ? 4 : 0) + (_lst[i] * 8) + (i - 1 == cur ? 64 : 0) + (_sd ? 128 : 0);
+  /*  розмір рядка в пікселях панелі (на 4/3 залежить від того, як ліг y)  */
+  const int16_t pw = uiP(MX + CWID) - uiP(MX), ph = uiP(y + RH) - uiP(y);
+  sig = sig * 31 + (uint32_t)ph;
   Slot* slot = nullptr;
   for(uint8_t k = 0; k < SLOTS; k++){
     Slot& sl = _slot[k];
@@ -364,11 +374,11 @@ const uint16_t* StationsPage::_cached(int32_t i, int16_t y, bool on, bool playin
       if(_slot[k].used < slot->used) slot = &_slot[k];
     }
   }
-  if(!slot->px) slot->px = (uint16_t*)heap_caps_malloc((size_t)CWID * RH * 2, MALLOC_CAP_SPIRAM);
+  if(!slot->px) slot->px = (uint16_t*)heap_caps_malloc((size_t)(uiP(CWID) + 2) * (uiP(RH) + 2) * 2, MALLOC_CAP_SPIRAM);
   if(!slot->px) return nullptr;
   Gfx rg;
-  rg.target(slot->px, 0, 0, CWID, RH);
-  rg.origin(-MX, -y);
+  rg.target(slot->px, 0, 0, pw, ph);
+  rg.origin(-MX, -y);                           /* (MX, y) → піксель панелі 0,0 */
   _drawRow(rg, i, y, on, playing, cur);
   slot->idx = i; slot->sig = sig; slot->used = ++_useN;
   return slot->px;
@@ -393,7 +403,7 @@ void StationsPage::draw(Gfx& g){
     const bool on = i == cur;
     /*  крайні рядки мають заокруглені кути над тлом із переходом — їх малюємо щоразу  */
     const uint16_t* px = (m2RowCache && i > 0 && i < (int32_t)n - 1 && _st && _st[i]) ? _cached(i, y, on, playing, cur) : nullptr;
-    if(px) g.blit(MX, y, CWID, RH, px);
+    if(px) g.blit(MX, y, uiP(MX + CWID) - uiP(MX), uiP(y + RH) - uiP(y), px);
     else _drawRow(g, i, y, on, playing, cur);
     if(on && playing && _st && _st[i]){
       const int16_t right = MX + CWID - 10;

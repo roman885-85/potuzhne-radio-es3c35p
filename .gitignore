@@ -7,11 +7,10 @@ docs/
 backup/
 source/broken204/
 
-# Проміжне збирання прошивки; налаштування arduino-cli створює rebuild.sh
-build/bp/
-build/out/
-build/*.log
-build/arduino-cli.yaml
+# Проміжне збирання прошивки, знімки екрана, журнали збирання — усе в build/ лише
+# локально; у git з build/ — тільки власний набір бібліотек (sketchbook)
+build/*
+!build/sketchbook/
 
 # Готові файли — у релізі на GitHub, не в коді
 Програми/
@@ -38,3 +37,6 @@ tools/cp1251fontconvert
 ЖУРНАЛ.md
 firmware/elf/
 __pycache__/
+
+# Python-оточення для tools/make_splash.py (numpy, pillow)
+tools/.venv/

@@ -13,6 +13,7 @@
 namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "hal/spi_ll.h"
 #include "esp_core_dump.h"
+#include "driver/gpio.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include "freertos_stats.h"
@@ -21,17 +22,23 @@ namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "../ES8311/yoES8311.h"
 #include "yoMenu.h"
 #include "../m2/m2pages.h"
+#include "../m2/m2player.h"
 #include "../extras/yoOta.h"
 #include "../extras/yoVersion.h"
 #include "../core/touchscreen.h"
 #include "../extras/yoExtras.h"
 #include "../extras/yoRecorder.h"
 #include "../extras/yoSermons.h"
+#include "../extras/yoLogos.h"
 #include "../extras/yoMic.h"
 #include "../extras/yoSfx.h"
 #include "../extras/yoDsp.h"
 #include "../extras/yoSpectrum.h"
 #include "../extras/yoAirplay.h"
+#include "../extras/yoHwTest.h"
+#if TS_MODEL==TS_MODEL_ST77922
+  #include "../ST77922_Touch/yoST77922Touch.h"
+#endif
 
 extern DspCore dsp;
 
@@ -64,16 +71,33 @@ static void b64row(const uint8_t* d, size_t n){
 
 /*  Самоперевірка: малюємо смужку відомого кольору, читаємо назад і
     порівнюємо. Якщо не збіглося — знімкам вірити не можна.  */
+#if DSP_MODEL==DSP_ST77922
+/*  ES3C35P: відеопам'ять панелі читається лише стиснутою, тож знімок — із «тіні»
+    (копії всього, що пішло в панель). Тінь вмикаємо, просимо перемалювати весь
+    екран (меню або плеєр — що зараз відкрите) і даємо кадру дійти.  */
+static void shadowFill(){
+  const bool was = lcdShadowOn();
+  lcdShadow(true);
+  if(!was){
+    if(yomenu.active()) m2::M.invalAll(); else m2::P.invalAll();
+    delay(450);
+  }
+}
+#endif
+
 bool yodbgReadTest(){
-  static uint16_t row[320];
+  static uint16_t row[DSP_W];
   /*  Читання відеопам'яті забирає шину SPI і змінює її частоту, а задача
       дисплея малює виджети з іншого ядра. Без замикання це гонка за шину —
       саме вона лишає сміття на екрані.  */
   display.lock();
   delay(60);
   uint16_t probe = 0xF81F;                 /* яскраво-рожевий, у інтерфейсі не трапляється */
-  dsp.fillRect(0, 0, 320, 4, probe);
-  dsp.dbgReadRow(1, 320, row);
+#if DSP_MODEL==DSP_ST77922
+  lcdShadow(true);
+#endif
+  dsp.fillRect(0, 0, DSP_W, 8, probe);
+  dsp.dbgReadRow(1, DSP_W, row);
   uint16_t got = row[10];
   bool ok = (got == probe);
   Serial.printf("SCRTEST: записано 0x%04X, прочитано 0x%04X -> %s\n", probe, got, ok?"ЧИТАННЯ ПРАЦЮЄ":"ЧИТАННЯ НЕ ПРАЦЮЄ");
@@ -83,13 +107,16 @@ bool yodbgReadTest(){
 }
 
 void yodbgScreenshot(){
-  static uint16_t row[320];
+  static uint16_t row[DSP_W];
+#if DSP_MODEL==DSP_ST77922
+  shadowFill();
+#endif
   display.lock();             /* див. пояснення в yodbgReadTest() */
   delay(60);
-  Serial.println("SCR_BEGIN 320 240");
-  for(uint16_t y=0; y<240; y++){
-    dsp.dbgReadRow(y, 320, row);
-    b64row((uint8_t*)row, 640);
+  Serial.printf("SCR_BEGIN %d %d\n", DSP_W, DSP_H);
+  for(uint16_t y=0; y<DSP_H; y++){
+    dsp.dbgReadRow(y, DSP_W, row);
+    b64row((uint8_t*)row, DSP_W * 2);
     Serial.println();
     if((y & 15)==15) delay(2);             /* даємо USB CDC віддихатись */
   }
@@ -154,8 +181,60 @@ void yodbgLoop(){
       continue;
     }
 
-    if(!strcmp(buf,"scr"))            yodbgScreenshot();
+    if(!strncmp(buf,"hwtest",6))      yoHwTest(buf + 6);   /* самоперевірка всіх вузлів (extras/yoHwTest) */
+    else if(!strcmp(buf,"heapmap")){
+      /*  Хто тримає внутрішню пам'ять: зайняті шматки від 1 КБ (розмір і адреса)
+          і підсумок. Спершу збираємо (обхід купи друкувати не можна — порт
+          губить рядки), потім друкуємо з паузами.  */
+      struct W { uint32_t used, free_, nUsed, largestFree; uint16_t n; uint32_t sz[64]; void* p[64]; };
+      static W w; memset(&w, 0, sizeof(w));
+      heap_caps_walk(MALLOC_CAP_INTERNAL, [](walker_heap_into_t hi, walker_block_info_t b, void* u) -> bool {
+        W* w = (W*)u;
+        if(b.used){ w->used += b.size; w->nUsed++; if(b.size >= 1024 && w->n < 64){ w->sz[w->n] = b.size; w->p[w->n] = b.ptr; w->n++; } }
+        else { w->free_ += b.size; if(b.size > w->largestFree) w->largestFree = b.size;
+               if(b.size >= 1024 && w->n < 64){ w->sz[w->n] = b.size | 0x80000000UL; w->p[w->n] = b.ptr; w->n++; } }
+        return true;
+      }, &w);
+      for(uint16_t i = 0; i < w.n; i++){ Serial.printf("HEAPBLK %s %6u %p\n", (w.sz[i] & 0x80000000UL) ? "ВІЛЬНО " : "зайнято", (unsigned)(w.sz[i] & 0x7FFFFFFFUL), w.p[i]); Serial.flush(); delay(3); }
+      Serial.printf("HEAPMAP внутрішня: зайнято %u Б у %u шматках (від 1 КБ — %u), вільно %u Б, найбільший вільний %u Б\n",
+                    (unsigned)w.used, (unsigned)w.nUsed, (unsigned)w.n, (unsigned)w.free_, (unsigned)w.largestFree);
+    }
+#if TS_MODEL==TS_MODEL_ST77922
+    else if(!strcmp(buf,"tsraw"))     { extern YoST77922Touch ts; ts.dbgRaw(); }
+    else if(!strcmp(buf,"tsreset"))   { extern YoST77922Touch ts; ts.hwReset(); Serial.println("TSRESET зроблено"); }
+    else if(!strncmp(buf,"tsrel",5))  { extern YoST77922Touch ts; if(buf[5] == ' ') ts.releaseMs = (uint16_t)atoi(buf + 6); Serial.printf("TSREL %u мс\n", ts.releaseMs); }
+    else if(!strcmp(buf,"tslog dump")) { extern YoST77922Touch ts; ts.logDump(); }
+    else if(!strncmp(buf,"tslog",5))  { extern YoST77922Touch ts; ts.logStart(buf[5] == ' ' ? (uint16_t)atoi(buf + 6) : 10); }
+#endif
+    else if(!strcmp(buf,"scr"))       yodbgScreenshot();
+#if DSP_MODEL==DSP_ST77922
+    /*  ES3C35P: екран ST77922 — статистика виводу, поворот векторними інструкціями, тінь для знімків  */
+    else if(!strncmp(buf,"lcdstat",7)) lcdStats(buf[7] == ' ' && buf[8] == 'r');
+    else if(!strncmp(buf,"te",2) && (buf[2] == 0 || buf[2] == ' ')) lcdTe(buf[2] == ' ' ? (int8_t)atoi(buf + 3) : -1);
+    else if(!strncmp(buf,"slidetest",9)) lcdSlideTest(buf[9] == ' ' ? (int8_t)atoi(buf + 10) : 1);
+    else if(!strncmp(buf,"lcdrd ",6)){ unsigned r = 0, l = 1, d = 1; if(sscanf(buf + 6, "%x %u %u", &r, &l, &d) >= 1) lcdRegRead((uint8_t)r, (uint8_t)l, (uint8_t)d); }
+    else if(!strncmp(buf,"rotpie",6))  lcdRotPie(buf[6] == ' ' ? (int8_t)atoi(buf + 7) : -1);
+    else if(!strcmp(buf,"rotcheck"))   lcdRotCheck();
+    else if(!strncmp(buf,"shadow ",7)){ lcdShadow(atoi(buf + 7) != 0); Serial.printf("SHADOW %d\n", lcdShadowOn() ? 1 : 0); }
+#endif
     else if(!strcmp(buf,"scrtest"))   yodbgReadTest();
+    else if(!strcmp(buf,"logoall"))   { logos.fetchAll(); Serial.printf("LOGOALL станцій %u\n", (unsigned)logos.batchTotal()); }
+    else if(!strncmp(buf,"logotest ",9)){ if(!logos.test(buf + 9)) Serial.println("LOGOTEST: зайнято або немає мережі"); }
+    else if(!strncmp(buf,"pinact ",7)){
+      /*  Чи «живе» вивід: читаємо рівень 20 000 разів поспіль (вхідний буфер вмикаємо
+          й для виходу) — частка одиниць і скільки разів перемикався. Такти I2S дають
+          тисячі перемикань, тиша — нуль.  */
+      int g = atoi(buf + 7);
+      if(g >= 0 && g < 49){
+        gpio_input_enable((gpio_num_t)g);
+        uint32_t hi = 0, tr = 0; int last = gpio_get_level((gpio_num_t)g);
+        for(int i = 0; i < 20000; i++){ int v = gpio_get_level((gpio_num_t)g); hi += v; tr += (v != last); last = v; }
+        Serial.printf("PINACT GPIO%d: одиниць %u%%, перемикань %u з 20000\n", g, (unsigned)(hi / 200), (unsigned)tr);
+      }
+    }
+    else if(!strcmp(buf,"logost"))    Serial.printf("LOGOST іде %d: %u з %u, знайдено %u, зайнято %d, версія %u\n", logos.batchOn() ? 1 : 0,
+                                                    (unsigned)logos.batchDone(), (unsigned)logos.batchTotal(), (unsigned)logos.batchFound(),
+                                                    logos.busy() ? 1 : 0, (unsigned)logos.version());
     else if(!strcmp(buf,"stop"))      player.sendCommand({PR_STOP,0});
     else if(!strncmp(buf,"play ",5))  player.sendCommand({PR_PLAY,(uint16_t)atoi(buf+5)});
     else if(!strncmp(buf,"vol ",4))   player.sendCommand({PR_VOL,(uint16_t)atoi(buf+4)});

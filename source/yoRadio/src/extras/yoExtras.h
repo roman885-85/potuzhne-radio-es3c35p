@@ -3,8 +3,8 @@
  *    - таймер сну (15/30/60/90 хв) із плавним затуханням наприкінці;
  *    - будильник: щодня або в будні, гучність наростає з нуля;
  *    - нічна яркість екрана за розкладом, дотик ненадовго будить;
- *    - батарея (TP4054, дільник 1:2 на GPIO9);
- *    - RGB-світлодіод WS2812 на GPIO42.
+ *    - батарея (TP4054, дільник 1:2: GPIO9 на ES3C28P, GPIO8 на ES3C35P);
+ *    - RGB-світлодіод WS2812 (GPIO42 на ES3C28P, GPIO40 на ES3C35P).
  *
  *  Налаштування живуть в окремому просторі NVS «yoext», а не в сховищі
  *  yoRadio: там свій формат і своя міграція. Записуємо не частіше ніж раз
@@ -20,9 +20,17 @@
 #define yoExtras_h
 
 #include <Arduino.h>
+#include "../core/options.h"     /* плата: виводи світлодіода, батареї, розмір екрана */
 
-#define EXT_BAT_PIN   9
-#define EXT_LED_PIN   42
+#ifndef EXT_BAT_PIN
+  #define EXT_BAT_PIN 9          /* ES3C28P; ES3C35P — 8 (myoptions.h) */
+#endif
+#ifndef EXT_LED_PIN
+  #define EXT_LED_PIN 42         /* ES3C28P; ES3C35P — 40 */
+#endif
+#ifndef EXT_DAC
+  #define EXT_DAC 1
+#endif
 
 enum extLed_e : uint8_t { LED_OFF = 0, LED_STATUS = 1, LED_MUSIC = 2 };
 
@@ -31,8 +39,8 @@ enum extLed_e : uint8_t { LED_OFF = 0, LED_STATUS = 1, LED_MUSIC = 2 };
     тотожна, поки калібрування не зроблено.  */
 #define TS_CAL_INSET  24
 #define TS_CAL_LO     (TS_CAL_INSET)
-#define TS_CAL_XHI    (320 - 1 - TS_CAL_INSET)
-#define TS_CAL_YHI    (240 - 1 - TS_CAL_INSET)
+#define TS_CAL_XHI    (DSP_W - 1 - TS_CAL_INSET)
+#define TS_CAL_YHI    (DSP_H - 1 - TS_CAL_INSET)
 
 struct ExtStore {
   uint8_t  ver;
@@ -81,14 +89,28 @@ struct ExtStore {
   uint8_t  lang;                                 /* мова екрана: 0 українська, 1 English (m2/m2lang) */
   uint8_t  dacPwr;                               /* дослід, ключ живлення модуля на IO3: 0 вимк, 1 вмикає високим, 2 вмикає низьким */
 };
-/*  Зовнішній ЦАП I2S — на вільні виводи роз'єму розширення  */
-#define DAC_BCLK  14
-#define DAC_LRC   21
-#define DAC_DOUT  2
-/*  Дослідне живлення модуля: єдиний вільний вивід роз'єму розширення, та ще й
-    з RTC-області — отже його можна тримати в нулі під час сну. Зайнятий лише
-    у варіанті з VS1053 (там MISO), але тому потрібна окрема прошивка.  */
-#define DAC_PWR   3
+/*  Зовнішній ЦАП I2S — на вільні виводи роз'ємів; які саме — у myoptions.h для
+    кожної плати (ES3C28P: 14/21/2, ключ IO3; ES3C35P: 45/46/43, ключ RXD0/IO44).  */
+#if EXT_DAC
+  #ifndef DAC_BCLK
+    #define DAC_BCLK  14
+    #define DAC_LRC   21
+    #define DAC_DOUT  2
+  #endif
+  /*  Дослідне живлення модуля (ключ): на ES3C28P — єдиний вільний вивід роз'єму
+      розширення, та ще й з RTC-області — його можна тримати в нулі під час сну.  */
+  #ifndef DAC_PWR
+    #define DAC_PWR   3
+  #endif
+#else
+  #define DAC_BCLK  255
+  #define DAC_LRC   255
+  #define DAC_DOUT  255
+  #define DAC_PWR   255
+#endif
+#ifndef DAC_PWR_NAME
+  #define DAC_PWR_NAME "IO3"
+#endif
 #define EXT_STORE_V1  10                          /* розмір першої версії — щоб не губити старі налаштування */
 
 /*  Обране зберігаємо назвою й адресою, а не номером у плейлисті: номер
@@ -229,6 +251,7 @@ class YoExtras {
     volatile uint8_t _pwrMode = 0;
     uint32_t _pwrAt = 0;
     void     _powerOff();
+    void     _sleepUntilTouch();          /* ES3C35P: легкий сон до дотику або кнопки BOOT (TS_INT — не RTC-вивід) */
     void     _armAlarmWake();          /* перед сном: пробудження таймером до будильника */
     uint32_t _ledTick = 0;
     uint32_t _ledTestUntil = 0;

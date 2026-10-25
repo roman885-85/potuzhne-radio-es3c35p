@@ -14,7 +14,9 @@
 YoOta ota;
 
 static const char* const REPO = "roman885-85/potuzhne-radio";
-static const char* const A_FW  = "PotuzhneRadio-ES3C28P-update.bin";
+/*  Прошивка — своя для кожної плати (PR_BOARD у myoptions.h). Сторінка радіо
+    однакова для обох, тож її файли лишились під старою назвою.  */
+static const char* const A_FW  = "PotuzhneRadio-" PR_BOARD "-update.bin";
 static const char* const A_JS  = "PotuzhneRadio-ES3C28P-app.js.gz";
 static const char* const A_CSS = "PotuzhneRadio-ES3C28P-app.css.gz";
 

@@ -4,6 +4,7 @@
 #include <SPIFFS.h>
 #include "yoRecorder.h"
 #include "yoSermons.h"
+#include "yoLogos.h"
 #include "yoWebApi.h"
 #include "yoDsp.h"
 #include "../core/options.h"
@@ -102,6 +103,9 @@ void YoExtras::_load(){
   if(s.vbass > 3) s.vbass = 0;
   if(s.lang >= m2::LANG_N) s.lang = m2::LANG_UK;
   if(s.dacPwr > 2) s.dacPwr = 0;
+#if !EXT_DAC
+  s.dac = 0; s.dacPwr = 0;              /* на цій платі зовнішнього ЦАП немає */
+#endif
   m2::langSet(s.lang);                   /* мова екрана — до першого малювання */
   yoDsp.changed();
 
@@ -231,6 +235,11 @@ void YoExtras::_wifiCheck(uint32_t now){
     BCLK 14, LRC 21, DIN 2. Перемикаємо самі виводи I2S на ходу, а
     вбудований підсилювач вимикаємо, щоб динамік плати мовчав.  */
 void YoExtras::applyDac(){
+#if !EXT_DAC
+  player.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_DIN, I2S_MCLK);
+  player.setOutputPins(player.status() == PLAYING);
+  return;
+#endif
   /*  Живлення подаємо ПЕРШИМ і даємо модулю отямитись: інакше такти підуть у
       ще мертву мікросхему й вона може не піднятись.  */
   if(s.dacPwr){
@@ -272,7 +281,7 @@ void YoExtras::applyDac(){
       ним, а не світиться від постійної шини 3,3 В (вона мусить лишатись під
       напругою, бо на ній живе годинник і сенсор, який будить радіо).  */
   player.setOutputPins(player.status() == PLAYING);
-  Serial.printf("##DAC#\tаудіовихід %u, живлення з IO3: %u\n", s.dac, s.dacPwr);
+  Serial.printf("##DAC#\tаудіовихід %u, живлення з " DAC_PWR_NAME ": %u\n", s.dac, s.dacPwr);
 }
 
 void YoExtras::begin(){
@@ -299,6 +308,7 @@ void YoExtras::loop(){
   _batLoop(now);
   _ledLoop(now);
   recorder.loop();
+  logos.loop();                      /* логотипи всіх станцій — раз і з кнопки */
   yoWebApiLoop();                    /* команди з веб-сторінки */
   _wifiCheck(now);
   _wifiFileGuard(now);
@@ -353,9 +363,11 @@ void YoExtras::_powerOff(){
 #endif
   /*  сенсор: INT тримається низько весь час дотику (режим опитування),
       сам переходить у ощадливий режим спостереження через 1 с без дотиків  */
+#if TS_MODEL==TS_MODEL_FT6336
   ftWrite(0xA4, 0x00);
   ftWrite(0x86, 0x01);
   ftWrite(0x87, 0x01);
+#endif
 
   pinMode(MUTE_PIN, OUTPUT);       digitalWrite(MUTE_PIN, MUTE_VAL);  gpio_hold_en((gpio_num_t)MUTE_PIN);
   pinMode(BRIGHTNESS_PIN, OUTPUT); digitalWrite(BRIGHTNESS_PIN, LOW); gpio_hold_en((gpio_num_t)BRIGHTNESS_PIN);
@@ -385,6 +397,9 @@ void YoExtras::_powerOff(){
   }
   gpio_deep_sleep_hold_en();
 
+#if TS_MODEL==TS_MODEL_ST77922
+  _sleepUntilTouch();                            /* ES3C35P: див. нижче; звідти не повертається */
+#endif
   /*  палець ще на кнопці «вимкнути» — дочекатись, поки відпустять,
       інакше радіо прокинулось би тієї ж миті  */
   pinMode(TS_INT, INPUT_PULLUP);
@@ -408,6 +423,7 @@ void YoExtras::_powerOff(){
     спати (новий відрізок коротший, помилка менша), близько — чекати в темряві
     й дзвонити, як завжди.  */
 RTC_DATA_ATTR static uint8_t s_alarmWakeArmed = 0;
+RTC_DATA_ATTR static uint8_t s_softTouchWake = 0;  /* ES3C35P: прокинулись від дотику в легкому сні й перезапустились */
 RTC_DATA_ATTR static int64_t s_alarmTestAt = 0;   /* перевірка (команда alarmtest): «будильник» на цю мить, переживає сон */
 static bool s_wokeTouch = false;
 static bool s_wokeAlarm = false;
@@ -503,7 +519,8 @@ static void tlsFree(void* p){ heap_caps_free(p); }
 
 void YoExtras::earlyBoot(){
   mbedtls_platform_set_calloc_free(tlsCalloc, tlsFree);
-  s_wokeTouch = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+  s_wokeTouch = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0 || s_softTouchWake;
+  s_softTouchWake = 0;
   s_wokeAlarm = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && s_alarmWakeArmed;
   s_alarmWakeArmed = 0;
   s_alarmQuiet = s_wokeAlarm;
@@ -935,3 +952,48 @@ void YoExtras::_ledLoop(uint32_t now){
   if(config.getMode() == PM_SDCARD){ _led(0, 6, 22); return; } /* картка — синій */
   _led(0, 18, 3);                                              /* радіо — зелений */
 }
+
+#if TS_MODEL==TS_MODEL_ST77922
+/*  ---------- ES3C35P: «вимкнено» = легкий сон до дотику ----------
+    Переривання сенсора ST77922 заведене на GPIO47, а будити з глибокого сну
+    вміють лише виводи RTC (0..21). Тому радіо засинає легким сном, з якого
+    будить будь-який вивід — тут сенсор (GPIO47); будильник — таймер. Кнопки
+    радіо не читає зовсім (рішення власника 25.10.2026: лише сенсор).
+    Прокинувшись, радіо однаково стартує заново: короткий глибокий сон на 50 мс —
+    і далі звичайний шлях, як після пробудження EXT0.  */
+static bool st77922Touched(){
+  Wire.beginTransmission(0x55); Wire.write(0x00); Wire.write(0x10);
+  if(Wire.endTransmission(false) != 0) return false;
+  if(Wire.requestFrom((uint8_t)0x55, (uint8_t)1) != 1) return false;
+  return (Wire.read() & 0x08) != 0;
+}
+
+void YoExtras::_sleepUntilTouch(){
+  /*  палець ще на кнопці «вимкнути»: чекаємо, поки сенсор перестане бачити дотик  */
+  for(int i = 0; i < 300 && st77922Touched(); i++) delay(10);
+  delay(300);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  pinMode(TS_INT, INPUT_PULLUP);
+  gpio_wakeup_enable((gpio_num_t)TS_INT, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  for(;;){
+    _armAlarmWake();
+    Serial.flush();
+    esp_light_sleep_start();
+    const esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
+    if(c == ESP_SLEEP_WAKEUP_TIMER){ s_softTouchWake = 0; break; }      /* будильник: s_alarmWakeArmed уже 1 */
+    if(c == ESP_SLEEP_WAKEUP_GPIO){
+      /*  сенсор — лише якщо справді торкнулись (не завада на лінії)  */
+      if(st77922Touched()){ s_softTouchWake = 1; s_alarmWakeArmed = 0; break; }
+      delay(30);
+      continue;
+    }
+    s_softTouchWake = 1; s_alarmWakeArmed = 0; break;
+  }
+  gpio_wakeup_disable((gpio_num_t)TS_INT);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(50000);
+  esp_deep_sleep_start();
+}
+#endif

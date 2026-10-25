@@ -9,6 +9,7 @@
 #include "../core/config.h"
 #include "../displays/dspcore.h"
 #include "../displays/tools/spidma.h"
+#include "../displays/tools/lcdout.h"
 #include "m2simd.h"
 #include "../extras/yoOta.h"
 #include "../extras/yoVersion.h"
@@ -126,23 +127,20 @@ void otaViewRender(){
   /*  підсвітка — повна: людина має бачити, що йде  */
   static bool lit = false;
   if(!lit){ lit = true; extras.pwmSet(extras.pwmTarget() ? extras.pwmTarget() : 180); }
-  const int16_t STRIP = 320 * 32;
-  uint16_t* buf = (uint16_t*)spidmaScratch((size_t)STRIP * 2);
+  const int32_t STRIP = (int32_t)PSW * (LCD_PUSH_COPIES ? 16 : 32);   /* пікселі панелі */
+  uint16_t* buf = (uint16_t*)lcdScratch((size_t)STRIP * 2);
   if(!buf) return;
-  bool dma = spidmaOk() || spidmaBegin();
+  const int16_t RH = lcdRowsFor(PSW, STRIP);         /* 32 рядки на ES3C28P, 16 на ES3C35P */
   Gfx g;
   g_m2Draw = true;
-  dsp.startWrite();
-  for(int16_t y0 = 0; y0 < SH; y0 += 32){
-    int16_t h = y0 + 32 > SH ? SH - y0 : 32;
-    g.target(buf, 0, y0, SW, h);
+  lcdBegin();
+  for(int16_t y0 = 0; y0 < PSH; y0 += RH){
+    int16_t h = y0 + RH > PSH ? PSH - y0 : RH;
+    g.target(buf, 0, y0, PSW, h);
     drawOta(g);
-    const uint32_t n = (uint32_t)SW * h;
-    sSwap16(buf, n);
-    dsp.setAddrWindow(0, y0, SW, h);
-    if(!(dma && spidmaWrite(buf, n * 2))) dsp.writePixels(buf, n, true, true);
+    if(lcdPush(0, y0, PSW, h, buf)) lcdWait();      /* буфер один — дочекатись, перш ніж малювати наступну */
   }
-  dsp.endWrite();
+  lcdEnd();
   g_m2Draw = false;
 }
 
