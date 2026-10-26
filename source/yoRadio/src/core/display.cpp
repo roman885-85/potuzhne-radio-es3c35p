@@ -185,7 +185,11 @@ void Display::_start() {
       треба, і заставка обривалась, не доказавши вступ (без картки радіо
       чекало Wi-Fi, і вона встигала). Даємо їй доказати, але не довше ніж
       5 с від увімкнення — інакше плеєр чекав би на несправній заставці.  */
-  if(splash.active() && !splash.introDone() && millis() < 5000){ _startWait = true; return; }
+  /*  Ліміт — від першого кадру заставки, а не від увімкнення: ES3C35P стартує довше, і
+      «не довше 5 с від увімкнення» обривало заставку на півдорозі або не давало їй початись
+      (власник 26.10.2026: «звук запуску, а заставка — частково або зовсім ні»).  */
+  if(splash.worthWaiting()){ _startWait = true; return; }
+  if(_startWait || splash.active()) Serial.printf("##DSP#\tстарт плеєра на %u мс, вступ заставки %s\n", (unsigned)millis(), splash.introDone() ? "доказано" : "обірвано");
   _startWait = false;
   splash.stop();
   if (network.status != CONNECTED && network.status != SDREADY) {
@@ -339,7 +343,7 @@ void Display::loop() {
   }
   if(_bootStep == 1 && splash.active()) splash.tick();     /* заставка, поки радіо шукає мережу */
   /*  Старт відклали, щоб заставка доказала вступ — повертаємось до нього.  */
-  if(_startWait && (!splash.active() || splash.introDone() || millis() >= 5000)) _start();
+  if(_startWait && !splash.worthWaiting()) _start();
 
   requestParams_t request;
   if(xQueueReceive(displayQueue, &request, DSP_QUEUE_TICKS)){

@@ -128,7 +128,8 @@ void setup() {
   player.lockOutput=false;
   if (config.store.smartstart == 1 && !YoExtras::wokeForAlarm()) {     /* будильник сам увімкне станцію */
     player.sendCommand({PR_PLAY, config.lastStation()});
-  }
+    Serial.printf("##BOOT#\tграти після ввімкнення: станція %u\n", (unsigned)config.lastStation());
+  }else Serial.printf("##BOOT#\tпісля ввімкнення не граю (smartstart=%u, будильник=%d)\n", (unsigned)config.store.smartstart, YoExtras::wokeForAlarm() ? 1 : 0);
   pm.on_end_setup();
   YoHang::begin();            /* сторож зависань: головний цикл і задача екрана */
 }
@@ -143,9 +144,38 @@ uint32_t yoSlowMs = 0;
 /*  Як часто взагалі крутиться цикл: дотик опитується раз на оберт, тож
     рідкий цикл — це і є «тормоза», навіть коли жоден крок не довгий.  */
 uint32_t yoLoopN = 0, yoLoopMax = 0, yoLoopFrom = 0;
+/*  aunet: те саме, але за кожну секунду окремо — щоб провал звуку було з чим зіставити.  */
+static char     yoSecWhat[40] = {0};
+static uint32_t yoSecMs = 0, yoSecLoop = 0, yoSecPlUs = 0;
+volatile bool   yoAuNet = false;
+/*  Останній крок довший за 40 мс — його друкує повідомлення про провал звуку (Audio.cpp).  */
+char     yoLongWhat[40] = {0};
+uint32_t yoLongMs = 0, yoLongAt = 0;
 static inline void yoSlow(const char* what, uint32_t t0){
   uint32_t d = millis() - t0;
+  if(d > 40){ yoLongMs = d; yoLongAt = millis(); strlcpy(yoLongWhat, what, sizeof(yoLongWhat)); }
+  if(d > yoSecMs){ yoSecMs = d; strlcpy(yoSecWhat, what, sizeof(yoSecWhat)); }
   if(d > 100 && d > yoSlowMs){ yoSlowMs = d; strlcpy(yoSlowWhat, what, sizeof(yoSlowWhat)); }
+}
+/*  Щосекунди (лише після команди aunet): скільки прийшло з мережі, скільки лежить у буфері
+    потоку, скільки відліків пішло в I2S і скільки часу цикл стояв у i2s_write (це добре:
+    буфер DMA повний), провали і найдовший крок циклу за ту саму секунду.  */
+static void yoAuNetTick(){
+  extern volatile uint32_t yoNetRx, yoNetAvMax, yoI2sWaitUs, yoAuUnderN, yoAuSamples;
+  static uint32_t t0 = 0, s0 = 0, u0 = 0;
+  const uint32_t now = millis();
+  if(now - t0 < 1000) return;
+  if(yoAuNet && t0){
+    const uint32_t dt = now - t0;
+    Serial.printf("AUNET %u Б/с, буфер %u КБ, відліків %u/с, провалів +%u, I2S чекав %u мс, плеєр %u мс, avail≤%u, цикл≤%u мс, крок %s %u мс, RSSI %d\n",
+                  (unsigned)((uint64_t)yoNetRx * 1000 / dt), (unsigned)(player.inBufferFilled() / 1024),
+                  (unsigned)((uint64_t)(yoAuSamples - s0) * 1000 / dt), (unsigned)(yoAuUnderN - u0),
+                  (unsigned)(yoI2sWaitUs / 1000), (unsigned)(yoSecPlUs / 1000), (unsigned)yoNetAvMax,
+                  (unsigned)yoSecLoop, yoSecWhat[0] ? yoSecWhat : "-", (unsigned)yoSecMs, (int)WiFi.RSSI());
+  }
+  yoNetRx = 0; yoNetAvMax = 0; yoI2sWaitUs = 0; s0 = yoAuSamples; u0 = yoAuUnderN;
+  yoSecMs = 0; yoSecWhat[0] = 0; yoSecLoop = 0; yoSecPlUs = 0;
+  t0 = now;
 }
   #define STEP(call) { uint32_t _t0 = millis(); call; yoSlow(#call, _t0); }
 #else
@@ -178,10 +208,11 @@ void loop() {
     static uint32_t prev = 0;
     uint32_t now = millis();
     if(!yoLoopFrom) yoLoopFrom = now;
-    if(prev){ uint32_t d = now - prev; if(d > yoLoopMax) yoLoopMax = d; }
+    if(prev){ uint32_t d = now - prev; if(d > yoLoopMax) yoLoopMax = d; if(d > yoSecLoop) yoSecLoop = d; }
     prev = now; yoLoopN++;
   }
   yodbgLoop();
+  yoAuNetTick();
 #endif
   STEP(timekeeper.loop1());
   STEP(config.eepromLoop());      /* відкладений запис налаштувань */
@@ -190,7 +221,11 @@ void loop() {
   /*  Плеєр крутимо завжди: навіть без мережі його чергу треба розгрібати,
       інакше вона забивається, а той, хто в неї пише (задача екрана), стоїть
       на кожній посилці. Саме через це радіо «тормозило» без мережі.  */
+#ifdef YO_DEBUG
+  { const uint32_t _u = micros(); STEP(player.loop()); yoSecPlUs += micros() - _u; }
+#else
   STEP(player.loop());
+#endif
   if (network.status == CONNECTED || network.status==SDREADY) {
 #if USE_OTA
     STEP(ArduinoOTA.handle());

@@ -50,5 +50,6 @@ void     lcdTe(int8_t mode);             /* такт панелі: -1 показ
 void     lcdSlideTest(int8_t dir);       /* зсув екрана самого на себе — зсуви й час кадрів */
 /*  0x45 (номер рядка розгортки) ця панель не віддає — завжди 0 (перевірено 26.10.2026).  */
 void     lcdRegRead(uint8_t reg, uint8_t len, uint8_t dummy);
+void     lcdPanelCmd(uint8_t c);         /* команда панелі без параметрів (перевірка tsdark: 0x28, 0x10, 0x11, 0x29) */
 
 #endif

@@ -53,8 +53,16 @@ bool YoSplash::begin(bool sync, const char* path){
   memset(_cv, 0, (size_t)_cw * ((_h + 7) & ~7) * 2);
 #endif
   _cur = 0; _nextMs = millis();
-  _hold = sync; _holdSince = millis();
+  _hold = sync; _holdSince = millis(); _firstMs = 0;
   return true;
+}
+
+bool YoSplash::worthWaiting() const {
+  if(!_data || introDone()) return false;
+  const uint32_t now = millis();
+  if(!_firstMs) return now < 12000;                     /* ще чекає звуку ввімкнення */
+  const uint32_t intro = (uint32_t)_loop * 1000 / (_fps ? _fps : 25);
+  return now - _firstMs < (intro + 600 < 4000 ? intro + 600 : 4000);
 }
 
 void YoSplash::stop(){
@@ -78,6 +86,7 @@ void YoSplash::tick(){
     _hold = false;
     _nextMs = now;
   }
+  if(!_firstMs){ _firstMs = now ? now : 1; Serial.printf("##DSP#\tзаставка: перший кадр на %u мс від увімкнення\n", (unsigned)now); }
   if((int32_t)(now - _nextMs) < 0) return;
   uint16_t idx;
   if(_cur < _wrap) idx = _cur;              /* звичайний кадр */

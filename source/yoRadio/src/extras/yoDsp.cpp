@@ -91,7 +91,9 @@ static float guardHz(uint8_t g){ return g >= 2 ? 160.0f : 100.0f; }
 uint8_t YoDsp::_build(Bq* q, float fs, uint8_t vol, uint8_t* nGuard) const {
   const ExtStore& e = extras.s;
   uint8_t n = 0;
-  bool speaker = e.dac == 0;                  /* зовнішній ЦАП (навушники, лінія) бас відтворює сам */
+  /*  динамік — вбудований (ES8311) або підсилювач MAX98357A; ЦАП на лінію (PCM5102A, UDA1334A)
+      іде в навушники чи підсилювач, а ті бас відтворюють самі  */
+  bool speaker = e.dac == 0 || e.dac == 3;
   /*  1. захист динаміка: Баттерворт 2-го порядку (м'який) або 4-го (сильний)  */
   if(speaker && e.eqGuard){
     float f = guardHz(e.eqGuard);
@@ -158,10 +160,22 @@ void YoDsp::changed(){
     for(uint8_t i = 0; i < n; i++) r += _magDb(q[i], fs, BAND_HZ[b]);
     if(r > mx) mx = r;
   }
-  float extra = mx > 6.0f ? mx - 6.0f : 0.0f;
-  _preDb = -6.0f - extra;
-  _preNext = 0.5f * pow(10.0f, -extra / 20.0f);
+  _mxDb = mx;
   _dirty = true;
+}
+
+/*  Попереднє ослаблення під підйоми — лише те, чого не дає гучність: гучність множиться
+    після еквалайзера, і на гучності нижче повної запас уже є. Раніше запас брали завжди:
+    +12 дБ на 31 Гц стишували весь звук на 6 дБ навіть на тихій гучності, а самого низу
+    колонки майже не відтворюють — власник 26.10.2026: «на низах еквалайзер замість
+    частоти регулює гучність». Тепер на повній гучності — як було, нижче — без ослаблення.
+    Кличуть _recalc() і setVolume() — обидва з задачі звуку.  */
+void YoDsp::_preUpdate(){
+  const float att = _vol > 0 ? -20.0f * log10f((float)_vol / 254.0f) : 48.0f;
+  float extra = _mxDb - 6.0f - att;
+  if(extra < 0) extra = 0;
+  _preDb = -6.0f - extra;
+  _pre = 0.5f * powf(10.0f, -extra / 20.0f);
 }
 
 void YoDsp::_recalc(){
@@ -191,7 +205,7 @@ void YoDsp::_recalc(){
     if(fresh){ t.l1 = t.l2 = t.r1 = t.r2 = 0; }
   }
   _nq = n; _nGuard = ng;
-  _pre = _preNext;
+  _preUpdate();
   _vbK = vbk;
   _limRel = 1.0f / (0.12f * fs);                 /* відпускання ~120 мс */
   _gSm = 1.0f / (0.02f * fs);                    /* гучність — за ~20 мс */
@@ -213,7 +227,9 @@ void YoDsp::setVolume(uint8_t vol, int8_t balance){
   if(balance > 0) r = (uint8_t)(step * (float)(balance * 16));
   _gL = (float)(vol - l) / 256.0f;
   _gR = (float)(vol - r) / 256.0f;
+  const bool v = vol != _vol;
   _vol = vol; _bal = balance;
+  if(v) _preUpdate();
 }
 
 uint32_t YoDsp::process(int16_t s[2]){

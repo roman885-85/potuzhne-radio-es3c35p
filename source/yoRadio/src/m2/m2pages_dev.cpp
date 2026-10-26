@@ -49,7 +49,7 @@ static Item s_devItems[] = {
   iNav("Заставка й звуки", IC_NOTE, C_PINK, vSnd, [](){ M.push(&pgDevSnd); }),
   iSection("ЛОГОТИПИ СТАНЦІЙ"),
   iButton("Завантажити всі логотипи", IC_REFRESH, [](){
-    logos.fetchAll();
+    logos.fetchAllForce();
     char m[48]; snprintf(m, sizeof(m), tr("шукаю для %u станцій"), (unsigned)logos.batchTotal());
     M.toast(m);
   }),

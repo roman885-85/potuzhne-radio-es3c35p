@@ -30,6 +30,8 @@ class YoLogos {
         пошуком; ті, що вже є або позначені «нема», пропускає. Сама — раз, коли вперше
         з'явилась мережа (позначка /logo/all.ok); ще — кнопка в «Розробнику», команда logoall.  */
     void     fetchAll();
+    void     fetchAllForce();                           /* кнопка: прохід навіть якщо вже був */
+    bool     isNo(uint32_t crc) const;                  /* у списку «нема логотипа» (список у пам'яті, не файл на станцію) */
     void     loop();                                    /* з головного циклу */
     bool     test(const char* favUrl);                  /* налагодження (logotest): скачати й розпакувати один значок */
     /*  Обкладинка проповіді просить мережу собі: прохід по станціях чекає (hold), а вона —
@@ -46,7 +48,7 @@ class YoLogos {
     volatile bool     _bOn = false, _bPending = false;
     volatile uint16_t _bI = 0, _bN = 0;
     volatile uint16_t _bFound = 0, _bNet = 0;
-    uint32_t _bAgainAt = 0;                             /* коли повторити прохід (мережа підвела) */
+    volatile bool _bForce = false;                      /* прохід навіть якщо вже був (кнопка) */
     volatile bool _bForget = false;                     /* перед проходом скинути позначки «нема» */
     volatile bool _hold = false;
     int      _one();                                    /* пошук для _url/_name (у задачі) */

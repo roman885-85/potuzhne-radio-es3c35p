@@ -256,6 +256,10 @@ class Menu {
     uint8_t _trN = 0; bool _trOn = false; uint32_t _trT0 = 0;
     /*  хвиля  */
     Rect _rip; uint8_t _ripR = 0; int16_t _ripX = 0, _ripY = 0; uint32_t _ripT0 = 0; bool _ripOn = false, _ripUp = false, _ripHdr = false; uint32_t _ripUpT = 0;
+    /*  Хвиля рядка — не одразу: перші 90 мс дотик ще може стати прокруткою, і хвиля
+        спалахувала під пальцем на початку кожного гортання (власник 26.10.2026). Відпустили
+        раніше (короткий дотик) — хвиля від відпускання.  */
+    uint32_t _ripStart() const { const uint32_t w = _ripT0 + 90; return (_ripUp && (int32_t)(_ripUpT - w) < 0) ? _ripUpT : w; }
     Page* _ripPage = nullptr;
     /*  повідомлення знизу  */
     char _toast[64] = { 0 }; uint32_t _toastT = 0; bool _toastOn = false;

@@ -1682,15 +1682,18 @@ VIEWS.time = page => {
   let ts = '', wsig = '';
   live(() => {
     if (S) now.textContent = S.time ? `На радіо зараз ${S.time}, ${S.date}.` : 'Радіо ще не отримало точний час.';
-    if ('tzh' in C && ts !== [C.tzh, C.tzm, C.sntp1, C.sntp2, C.timeint].join('|')) {
-      ts = [C.tzh, C.tzm, C.sntp1, C.sntp2, C.timeint].join('|');
+    if ('tzh' in C && S && ts !== [C.tzh, C.tzm, C.sntp1, C.sntp2, C.timeint, S.dst].join('|')) {
+      ts = [C.tzh, C.tzm, C.sntp1, C.sntp2, C.timeint, S.dst].join('|');
       tz.textContent = '';
       const hs = selectEl(Array.from({ length: 27 }, (_, i) => [i - 12, (i - 12 >= 0 ? '+' : '') + (i - 12)]), C.tzh, () => {});
       const ms = selectEl([[0, ':00'], [15, ':15'], [30, ':30'], [45, ':45']], C.tzm, () => {});
       const s1 = h('input', { type: 'text', value: C.sntp1, maxlength: 34 }), s2 = h('input', { type: 'text', value: C.sntp2, maxlength: 34 });
       const iv = h('input', { type: 'number', min: 15, max: 1440, value: C.timeint, style: { width: '100px' } });
+      const dstOn = S && S.dst === 1;
+      const dst = sw(dstOn, v => { setx({ dst: v ? 1 : 0 }).then(() => toast(v ? 'Літній час радіо ставитиме саме' : 'Літній час вимкнено: пояс — як вибрано')); });
       tz.append(
-        h('div', { class: 'fld' }, h('span', null, 'Часовий пояс (UTC)'), h('div', { class: 'bar' }, h('div', { style: { width: '100px' } }, hs), h('div', { style: { width: '100px' } }, ms), h('span', { class: 'note', style: { margin: 0 } }, 'Україна: +2 взимку, +3 влітку'))),
+        h('div', { class: 'fld' }, h('span', null, 'Часовий пояс (UTC)'), h('div', { class: 'bar' }, h('div', { style: { width: '100px' } }, hs), h('div', { style: { width: '100px' } }, ms), h('span', { class: 'note', style: { margin: 0 } }, dstOn ? 'пояс зимовий — Україна: +2' : 'Україна: +2 взимку, +3 влітку'))),
+        row('Літній час — сам', 'остання неділя березня й жовтня, як у Європі: пояс вибирайте зимовий', dst),
         h('div', { class: 'grid2' }, h('label', { class: 'fld' }, h('span', null, 'Сервер часу'), s1), h('label', { class: 'fld' }, h('span', null, 'Запасний сервер'), s2)),
         h('label', { class: 'fld inl' }, h('span', null, 'Звіряти час кожні, хв'), iv),
         btn('Застосувати', 'check', () => { send('tzh=' + hs.value); send('tzm=' + ms.value); send('sntp2=' + s2.value.trim()); send('sntp1=' + s1.value.trim()); send('timeint=' + iv.value); toast('Збережено'); }, 'acc'));

@@ -42,6 +42,7 @@ class YoST77922Touch {
     uint16_t ghostMs = 150;                        /* фільтр «привида» після відпускання */
     uint32_t ghosts = 0;                           /* скільки «привидів» відкинуто */
     void dbgRaw();                                /* консоль «tsraw»: сирі регістри й лічильники */
+    bool rdReg(uint16_t reg, uint8_t* buf, uint8_t len) { return _rd(reg, buf, len); }   /* консоль «tsdark» */
     void hwReset();                               /* перезапуск сенсора виводом RST */
     void logStart(uint16_t secs);                 /* консоль «tslog»: записати кожен опит (у PSRAM) */
     void logDump();

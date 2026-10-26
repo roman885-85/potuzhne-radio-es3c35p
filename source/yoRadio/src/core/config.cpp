@@ -223,7 +223,7 @@ void Config::changeMode(int newmode){
 void Config::initSDPlaylist() {
 #ifdef USE_SD
   //store.countStation = 0;
-  bool doIndex = !sdman.exists(INDEX_SD_PATH);
+  bool doIndex = !sdman.exists(INDEX_SD_PATH) || !sdman.sigSame();
   if(doIndex) sdman.indexSDPlaylist();
   if (SDPLFS()->exists(INDEX_SD_PATH)) {
     File index = SDPLFS()->open(INDEX_SD_PATH, "r");
@@ -453,17 +453,10 @@ void Config::setScreensaverPlayingBlank(bool val){
 #endif
 }
 void Config::setSntpOne(const char *val){
-  bool tzdone = false;
-  if (strlen(val) > 0 && strlen(store.sntp2) > 0) {
-    configTime(store.tzHour * 3600 + store.tzMin * 60, getTimezoneOffset(), val, store.sntp2);
-    tzdone = true;
-  } else if (strlen(val) > 0) {
-    configTime(store.tzHour * 3600 + store.tzMin * 60, getTimezoneOffset(), val);
-    tzdone = true;
-  }
-  if (tzdone) {
-    timekeeper.forceTimeSync = true;
+  if (strlen(val) > 0) {
     saveValue(config.store.sntp1, val, 35);
+    setTimeConf();
+    timekeeper.forceTimeSync = true;
   }
 }
 void Config::setShowweather(bool val){
@@ -537,13 +530,14 @@ void Config::resetSystem(const char *val, uint8_t clientId){
     return;
   }
   if (strcmp(val, "timezone") == 0) {
-    saveValue(&store.tzHour, (int8_t)3, false);
+    saveValue(&store.tzHour, (int8_t)2, false);          /* Київ, зимовий; літній час — сам */
     saveValue(&store.tzMin, (int8_t)0, false);
     saveValue(store.sntp1, "pool.ntp.org", 35, false);
-    saveValue(store.sntp2, "0.ru.pool.ntp.org", 35);
+    saveValue(store.sntp2, "ua.pool.ntp.org", 35);
     saveValue(&store.timeSyncInterval, (uint16_t)60);
     saveValue(&store.timeSyncIntervalRTC, (uint16_t)24);
-    configTime(store.tzHour * 3600 + store.tzMin * 60, getTimezoneOffset(), store.sntp1, store.sntp2);
+    if(extras.s.dstMode != 1){ extras.s.dstMode = 1; extras.changed(); }
+    setTimeConf();
     timekeeper.forceTimeSync = true;
     netserver.requestOnChange(GETTIMEZONE, clientId);
     return;
@@ -590,7 +584,7 @@ void Config::setDefaults() {
   store.lastSSID = 0;
   store.audioinfo = false;
   store.smartstart = 2;
-  store.tzHour = 3;
+  store.tzHour = 2;                /* Київ, зимовий: літній час радіо ставить саме (extras.s.dstMode) */
   store.tzMin = 0;
   store.timezoneOffset = 0;
 
@@ -605,7 +599,7 @@ void Config::setDefaults() {
   store.brightness=100;
   store.contrast=55;
   strlcpy(store.sntp1,"pool.ntp.org", 35);
-  strlcpy(store.sntp2,"1.ru.pool.ntp.org", 35);
+  strlcpy(store.sntp2,"ua.pool.ntp.org", 35);
   store.showweather=false;
   strlcpy(store.weatherlat,"55.7512", 10);
   strlcpy(store.weatherlon,"37.6184", 10);
@@ -676,9 +670,16 @@ void Config::saveIR(){
 /*  Один запис після того, як зміни вщухли. Плата за це — при раптовому
     знеструмленні можна втратити останні налаштування; за збереження ресурсу
     пам'яті це прийнятно.  */
+/*  Поки грає звук, пишемо лише через 5 хв без нових змін: запис у флеш зупиняє обидва ядра,
+    а кожен четвертий запис, зі стиранням сторінки NVS, — 83–94 мс, тобто весь запас виводу
+    I2S (замір eetest 26.10.2026: 9 мс звичайно, 83 і 94 мс зі стиранням) — клацання чи провал.
+    Інакше пишемо в тиші: зупинка, перемикання станції (Player::_play), сон, перезапуск.  */
+#define EEPROM_PLAYING_DELAY (5UL * 60 * 1000)
 void Config::eepromLoop(){
   if(!_eeDirty) return;
-  if(millis() - _eeDirtyAt < EEPROM_FLUSH_DELAY) return;
+  const uint32_t idle = millis() - _eeDirtyAt;
+  if(idle < EEPROM_FLUSH_DELAY) return;
+  if((player.isRunning() || player.extOn) && idle < EEPROM_PLAYING_DELAY) return;
   EEPROM.commit();
   _eeDirty = false;
 }
@@ -1013,11 +1014,36 @@ bool Config::saveWifi() {
   return true;
 }
 
+/*  Пояс для бібліотеки C (рядок POSIX TZ). Пояс у налаштуваннях — зимовий (стандартний);
+    з літнім часом (extras.s.dstMode = 1) годинник сам переходить за правилом Європи:
+    остання неділя березня й жовтня о 01:00 за Гринвічем (Київ: 03:00 → 04:00 навесні,
+    04:00 → 03:00 восени). POSIX пише зсув навпаки: Київ (+2) — «STD-2».  */
+static void tzString(char* b, size_t n, int16_t m, bool dst){
+  const int16_t o = -m;
+  char off[10];
+  snprintf(off, sizeof(off), "%s%d:%02d", o < 0 ? "-" : "", abs(o) / 60, abs(o) % 60);
+  const int16_t t1 = 60 + m, t2 = 120 + m;          /* 01:00 за Гринвічем — місцевим зимовим і літнім */
+  if(!dst || t1 < 0){ snprintf(b, n, "STD%s", off); return; }
+  snprintf(b, n, "STD%sDST,M3.5.0/%d:%02d,M10.5.0/%d:%02d", off, t1 / 60, t1 % 60, t2 / 60, t2 % 60);
+}
+
+void Config::applyTz(){
+  char tz[48];
+  tzString(tz, sizeof(tz), store.tzHour * 60 + store.tzMin, extras.s.dstMode == 1);
+  setenv("TZ", tz, 1);
+  tzset();
+}
+
 void Config::setTimeConf(){
+  char tz[48];
+  tzString(tz, sizeof(tz), store.tzHour * 60 + store.tzMin, extras.s.dstMode == 1);
   if(strlen(store.sntp1)>0 && strlen(store.sntp2)>0){
-    configTime(store.tzHour * 3600 + store.tzMin * 60, getTimezoneOffset(), store.sntp1, store.sntp2);
+    configTzTime(tz, store.sntp1, store.sntp2);
   }else if(strlen(store.sntp1)>0){
-    configTime(store.tzHour * 3600 + store.tzMin * 60, getTimezoneOffset(), store.sntp1);
+    configTzTime(tz, store.sntp1);
+  }else{
+    setenv("TZ", tz, 1);
+    tzset();
   }
 }
 

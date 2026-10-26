@@ -251,6 +251,7 @@ static void onState(AsyncWebServerRequest* r){
   o.put(']');
   o.kn("favOn", extras.favPlaying());
   o.kn("favHide", s.favHide);
+  o.kn("dst", s.dstMode);
   bool serm = player.remoteStationName && sermons.playing() >= 0;
   o.k("serm"); o.put('{'); o.kn("on", serm); o.kn("i", sermons.playing());
   if(serm){ const Sermon* it = sermons.at(sermons.playing()); if(it){ o.ks("t", it->title); o.ks("p", it->preacher); o.ks("c", it->cover); } }
@@ -690,6 +691,7 @@ static void apply(const WebCmd& c){
   else if(!strcmp(k, "ledMode"))    s.ledMode = clampi(v, 0, 2);
   else if(!strcmp(k, "batSave"))    s.batSave = clampi(v, 0, 4);
   else if(!strcmp(k, "favHide"))    s.favHide = clampi(v, 0, 1);
+  else if(!strcmp(k, "dst"))        { s.dstMode = clampi(v, 0, 1); config.applyTz(); }
   else if(!strcmp(k, "noBat"))      { s.noBat = clampi(v, 0, 1); display.requestRedraw(); }
   else if(!strcmp(k, "noIp"))       { s.noIp = clampi(v, 0, 1); display.requestRedraw(); }
   else if(!strcmp(k, "noSd")){

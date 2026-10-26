@@ -542,12 +542,17 @@ static void present(){
   uint32_t sum = 0;
   if(!s_drOver) for(uint8_t i = 0; i < s_drN; i++){ list[n] = al(s_dr[i]); sum += (uint32_t)(list[n].x1 - list[n].x0) * (list[n].y1 - list[n].y0); n++; }
   clearDirty();
-  /*  Окремими вікнами — лише коли все вміститься в гасіння (3,3 мс; ~40 КБ з поворотом):
-      тоді порядок неважливий. Інакше — одним вікном у порядку розгортки.  */
-  const bool split = n > 1 && sum <= 20000 && sum * 2 < (uint32_t)(bb.x1 - bb.x0) * (bb.y1 - bb.y0);
+  /*  Окремими вікнами — коли разом вони значно менші за загальний прямокутник і
+      встигають у гасіння (≤ 48 000 точок ≈ 2,4 мс шини): тоді пишемо їх одразу на
+      початку гасіння, і порядок неважливий. Головний екран (риски спектра внизу,
+      риски в картці вгорі, секунди) так і є — раніше він виводив прямокутник на пів
+      екрана (~210 КБ на кадр, 5,4 МБ/с через PSRAM), і це заважало звуку на іншому
+      ядрі (спільні кеш і шина флешу/PSRAM). Інакше — одним вікном у порядку розгортки.  */
+  const bool split = n > 1 && sum <= 48000 && sum * 2 < (uint32_t)(bb.x1 - bb.x0) * (bb.y1 - bb.y0);
   /*  рядки панелі вікна: поворот 1 — стовпці x, 3 — дзеркально  */
   const int16_t r0 = rot == 1 ? bb.x0 : PH - bb.x1, r1 = rot == 1 ? bb.x1 : PH - bb.x0;
-  waitSafe(r0, r1, split ? sum : (uint32_t)(bb.x1 - bb.x0) * (bb.y1 - bb.y0));
+  if(split) waitBlank();
+  else waitSafe(r0, r1, (uint32_t)(bb.x1 - bb.x0) * (bb.y1 - bb.y0));
   const int64_t t0 = esp_timer_get_time();
   if(split){
     /*  за зростанням рядка панелі (поворот 1 — x, 3 — навпаки)  */
@@ -820,8 +825,12 @@ void DspCore::flip(){
   markDirty(0, 0, DSP_W, DSP_H);           /* увесь кадр — у новому повороті (з наступним виводом) */
 }
 void DspCore::invert(){ cmd((config.store.invertdisplay ^ DSP_INVERT_BASE) ? 0x21 : 0x20, nullptr, 0); }
-void DspCore::sleep(){ cmd(0x28, nullptr, 0); delay(20); cmd(0x10, nullptr, 0); delay(120); }
+/*  «Сон» екрана — лише погасити зображення (0x28), без 0x10 (сну контролера): сенсор
+    дотику вбудований у той самий ST77922 і в його сні не сканує, тож радіо, «вимкнене»
+    з меню, не прокидалось від дотику (звіт власника 26.10.2026). Підсвітку гасить виклик.  */
+void DspCore::sleep(){ cmd(0x28, nullptr, 0); delay(20); }
 void DspCore::wake(){ cmd(0x11, nullptr, 0); delay(120); cmd(0x29, nullptr, 0); delay(20); }
+void lcdPanelCmd(uint8_t c){ cmd(c, nullptr, 0); }
 
 void DspCore::setSPISpeed(uint32_t hz){ drain(); addDevice(hz); }
 

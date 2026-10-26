@@ -16,6 +16,9 @@ class YoSplash {
     void stop();
     bool active() const { return _data != nullptr; }
     bool introDone() const { return _cur >= _loop; }
+    /*  Чекати, поки вступ докаже, ще варто: від першого кадру минуло менше за вступ із запасом
+        (не довше 4 с), а перший кадр — не пізніше 12 с від увімкнення.  */
+    bool worthWaiting() const;
   private:
     uint8_t*  _data = nullptr;
     size_t    _size = 0;
@@ -25,6 +28,7 @@ class YoSplash {
     uint32_t  _nextMs = 0;
     bool      _hold = false;
     uint32_t  _holdSince = 0;
+    uint32_t  _firstMs = 0;                           /* коли показано перший кадр (0 — ще ні) */
     uint8_t*  _px = nullptr;                          /* пікселі смуги, внутрішня пам'ять для DMA */
     uint16_t* _cv = nullptr;                          /* ES3C35P: полотно кадру (PSRAM) — смуги панелі кратні 8 рядкам */
     uint16_t  _cw = 0;                                /* ширина полотна (кратна 8) */

@@ -2,11 +2,14 @@
 #ifdef YO_DEBUG
 
 #include "../core/config.h"
+#include "../core/commandhandler.h"
 #include "../core/display.h"
 #include "../core/player.h"
 #include "../core/network.h"
 #include "../core/timekeeper.h"
 #include "../core/sdmanager.h"
+#include "esp_vfs.h"
+#include "esp_vfs_fat.h"
 #include "../displays/dspcore.h"
 #include "../displays/tools/spidma.h"
 #include "../m2/m2simd.h"
@@ -14,6 +17,7 @@ namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "hal/spi_ll.h"
 #include "esp_core_dump.h"
 #include "driver/gpio.h"
+#include "driver/i2s.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include "freertos_stats.h"
@@ -201,6 +205,25 @@ void yodbgLoop(){
     }
 #if TS_MODEL==TS_MODEL_ST77922
     else if(!strcmp(buf,"tsraw"))     { extern YoST77922Touch ts; ts.dbgRaw(); }
+    else if(!strncmp(buf,"tsdark",6)){
+      /*  Чи живий сенсор, коли екран погашено (0x28) і коли контролер спить (0x28 + 0x10):
+          відповідає він по I2C і яка лінія INT. Потім екран вмикається знову.  */
+      extern YoST77922Touch ts;
+      const bool deep = buf[6] == ' ' && buf[7] == '1';
+      display.lock(); delay(120);
+      lcdPanelCmd(0x28); delay(20);
+      if(deep){ lcdPanelCmd(0x10); delay(150); }
+      const uint32_t e0 = ts.errors, r0 = ts.reports;
+      for(uint8_t i = 0; i < 20; i++){ ts.read(); delay(50); }
+      Serial.printf("TSDARK %s: опитів 20, помилок I2C +%u, звітів +%u, INT=%d\n", deep ? "0x28+0x10 (сон контролера)" : "0x28 (лише погашено)",
+                    (unsigned)(ts.errors - e0), (unsigned)(ts.reports - r0), digitalRead(TS_INT));
+      { uint8_t r[4] = { 0 }; const bool ok = ts.rdReg(0x0001, r, 3);
+        Serial.printf("TSDARK регістри 0x01..0x03 (стан, керування, до простою): %02X %02X %02X%s\n", r[0], r[1], r[2], ok ? "" : " (помилка)"); }
+      ts.dbgRaw();
+      lcdPanelCmd(0x11); delay(130); lcdPanelCmd(0x29); delay(20);
+      { uint8_t r[4] = { 0 }; ts.rdReg(0x0001, r, 3); Serial.printf("TSDARK після вмикання: %02X %02X %02X\n", r[0], r[1], r[2]); }
+      display.unlock();
+    }
     else if(!strcmp(buf,"tsreset"))   { extern YoST77922Touch ts; ts.hwReset(); Serial.println("TSRESET зроблено"); }
     else if(!strncmp(buf,"tsrel",5))  { extern YoST77922Touch ts; if(buf[5] == ' ') ts.releaseMs = (uint16_t)atoi(buf + 6); Serial.printf("TSREL %u мс\n", ts.releaseMs); }
     else if(!strcmp(buf,"tslog dump")) { extern YoST77922Touch ts; ts.logDump(); }
@@ -218,7 +241,7 @@ void yodbgLoop(){
     else if(!strncmp(buf,"shadow ",7)){ lcdShadow(atoi(buf + 7) != 0); Serial.printf("SHADOW %d\n", lcdShadowOn() ? 1 : 0); }
 #endif
     else if(!strcmp(buf,"scrtest"))   yodbgReadTest();
-    else if(!strcmp(buf,"logoall"))   { logos.fetchAll(); Serial.printf("LOGOALL станцій %u\n", (unsigned)logos.batchTotal()); }
+    else if(!strcmp(buf,"logoall"))   { logos.fetchAllForce(); Serial.printf("LOGOALL станцій %u\n", (unsigned)logos.batchTotal()); }
     else if(!strncmp(buf,"logotest ",9)){ if(!logos.test(buf + 9)) Serial.println("LOGOTEST: зайнято або немає мережі"); }
     else if(!strncmp(buf,"pinact ",7)){
       /*  Чи «живе» вивід: читаємо рівень 20 000 разів поспіль (вхідний буфер вмикаємо
@@ -244,6 +267,113 @@ void yodbgLoop(){
       if(tab){ *tab=0; addStation(buf+4, tab+1); Serial.println("DBG: станцію додано"); }
     }
     else if(!strcmp(buf,"reindex")){ config.indexPlaylist(); Serial.println("DBG: індекс перебудовано"); }
+    else if(!strncmp(buf,"sdls",4)){
+      /*  Що лежить на картці: «sdls» — корінь, «sdls /Музика» — тека (до 200 записів).  */
+      const char* path = buf[4] == ' ' ? buf + 5 : "/";
+      if(!sdman.ready && !sdman.start()) Serial.println("SDLS: картки немає");
+      else{
+        File d = sdman.open(path);
+        if(!d || !d.isDirectory()) Serial.printf("SDLS: «%s» — не тека\n", path);
+        else{
+          uint16_t n = 0; bool isDir = false;
+          for(String f = d.getNextFileName(&isDir); f.length() && n < 200; f = d.getNextFileName(&isDir), n++){
+            if(isDir) Serial.printf("  [тека] %s\n", f.c_str());
+            else{ File x = sdman.open(f); Serial.printf("  %9u %s\n", x ? (unsigned)x.size() : 0, f.c_str()); if(x) x.close(); }
+            Serial.flush();
+          }
+          Serial.printf("SDLS %s: %u записів\n", path, n);
+        }
+        if(d) d.close();
+      }
+    }
+    else if(!strncmp(buf,"sdhead ",7)){
+      /*  Перші рядки текстового файла на картці (плейлист картки — /data/playlistsd.csv).  */
+      char path[120]; int lines = 20;
+      if(sscanf(buf + 7, "%119s %d", path, &lines) >= 1){
+        if(!sdman.ready) sdman.start();
+        File f = sdman.open(path, "r");
+        if(!f) Serial.printf("SDHEAD: немає «%s»\n", path);
+        else{
+          Serial.printf("SDHEAD %s, %u Б:\n", path, (unsigned)f.size());
+          for(int i = 0; i < lines && f.available(); i++){ String l = f.readStringUntil('\n'); Serial.printf("  %s\n", l.c_str()); Serial.flush(); }
+          f.close();
+        }
+      }
+    }
+    else if(!strncmp(buf,"sdhex ",6)){
+      /*  Перші байти файла на картці шістнадцятково (заголовок WAV тощо): «sdhex /шлях [скільки]».  */
+      char path[120]; int n = 96;
+      if(sscanf(buf + 6, "%119s %d", path, &n) >= 1){
+        if(n < 1) n = 1; if(n > 512) n = 512;
+        if(!sdman.ready) sdman.start();
+        File f = sdman.open(path, "r");
+        if(!f) Serial.printf("SDHEX: немає «%s»\n", path);
+        else{
+          uint8_t b[512]; const int got = f.read(b, n); f.close();
+          Serial.printf("SDHEX %s, перші %d Б:\n", path, got);
+          for(int i = 0; i < got; i += 16){
+            Serial.printf("  %04X ", i);
+            for(int j = 0; j < 16 && i + j < got; j++) Serial.printf(" %02X", b[i + j]);
+            Serial.print("  ");
+            for(int j = 0; j < 16 && i + j < got; j++) Serial.print((b[i + j] >= 32 && b[i + j] < 127) ? (char)b[i + j] : '.');
+            Serial.println(); Serial.flush();
+          }
+        }
+      }
+    }
+    else if(!strncmp(buf,"sdspeed ",8)){
+      /*  Швидкість читання картки: 2 МБ файла шматками по 32 КБ у PSRAM (як буфер потоку) і
+          по 4 КБ у внутрішню пам'ять (її картка пише прямим доступом).  */
+      char path[120];
+      if(sscanf(buf + 8, "%119s", path) == 1){
+        if(!sdman.ready) sdman.start();
+        for(uint8_t mode = 0; mode < 2; mode++){
+          File f = sdman.open(path, "r");
+          if(!f){ Serial.printf("SDSPEED: немає «%s»\n", path); break; }
+          const size_t chunk = mode ? 4096 : 32768;
+          uint8_t* b = (uint8_t*)heap_caps_malloc(chunk, mode ? (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) : MALLOC_CAP_SPIRAM);
+          if(!b){ f.close(); Serial.println("SDSPEED: немає пам'яті"); break; }
+          const int64_t t0 = esp_timer_get_time(); size_t tot = 0;
+          while(tot < 2 * 1024 * 1024){ const int r = f.read(b, chunk); if(r <= 0) break; tot += r; }
+          const int64_t us = esp_timer_get_time() - t0;
+          f.close(); heap_caps_free(b);
+          Serial.printf("SDSPEED %s: %u КБ за %u мс — %.2f МБ/с\n", mode ? "внутрішня, по 4 КБ" : "PSRAM, по 32 КБ",
+                        (unsigned)(tot / 1024), (unsigned)(us / 1000), us ? (double)tot / (double)us : 0.0);
+        }
+      }
+    }
+    else if(!strcmp(buf,"tz")){
+      /*  Пояс і літній час: що в TZ, котра година за UTC і місцева, чи діє літній час.  */
+      const time_t t = time(nullptr); struct tm lt, ut; localtime_r(&t, &lt); gmtime_r(&t, &ut);
+      char a[24], b[24]; strftime(a, sizeof(a), "%d.%m.%Y %H:%M:%S", &lt); strftime(b, sizeof(b), "%H:%M:%S", &ut);
+      Serial.printf("TZ «%s»: місцевий %s (літній=%d), UTC %s; пояс %+d:%02d, літній час %s; на екрані %02d:%02d\n",
+                    getenv("TZ") ? getenv("TZ") : "-", a, lt.tm_isdst, b, config.store.tzHour, abs(config.store.tzMin),
+                    extras.s.dstMode == 1 ? "сам (Європа)" : "вимк", network.timeinfo.tm_hour, network.timeinfo.tm_min);
+    }
+    else if(!strcmp(buf,"vfs")){
+      /*  Зареєстровані файлові системи й відкриті дескриптори (ESP-IDF) — шукати, хто тримає
+          запис, коли картка не монтується вдруге («mount_to_vfs failed 0x101»).  */
+      char* b = nullptr; size_t n = 0;
+      FILE* f = open_memstream(&b, &n);
+      if(f){ esp_vfs_dump_registered_paths(f); esp_vfs_dump_fds(f); fclose(f); }
+      Serial.printf("VFS:\n%s\nVFS кінець\n", b ? b : "(нічого)");
+      free(b);
+    }
+    else if(!strncmp(buf,"sdcycle",7)){
+      /*  Відмонтувати й змонтувати картку N разів поспіль — як після «вийняли й вставили»:
+          чи не кінчаються записи файлових систем (mount_to_vfs failed).  */
+      int n = buf[7] == ' ' ? atoi(buf + 8) : 5; if(n < 1) n = 1; if(n > 50) n = 50;
+      int ok = 0;
+      for(int i = 0; i < n; i++){
+        sdman.stop(); delay(50);
+        const bool r = sdman.start();
+        File d = r ? sdman.open("/") : File();
+        const bool rd = d && d.isDirectory(); if(d) d.close();
+        Serial.printf("SDCYCLE %d: змонтовано=%d, корінь читається=%d\n", i + 1, r ? 1 : 0, rd ? 1 : 0); Serial.flush();
+        if(r && rd) ok++;
+      }
+      Serial.printf("SDCYCLE: %d з %d вдало\n", ok, n);
+    }
     else if(!strcmp(buf,"sd")){
       Serial.printf("SD: ready=%d ", sdman.ready ? 1 : 0);
       if(!sdman.ready) Serial.printf("start=%d ", sdman.start() ? 1 : 0);
@@ -533,6 +663,16 @@ void yodbgLoop(){
       if(f) f.close();
     }
     else if(!strcmp(buf,"wstate")) network.dump();
+    else if(!strcmp(buf,"wps")){
+      /*  Енергоощадження Wi-Fi насправді (не те, що просили): у сні модему радіо приймає
+          пакети лише на маяках точки — +100 мс до кожного обміну, а вікно TCP тут 5760 Б.  */
+      wifi_ps_type_t ps = WIFI_PS_NONE; esp_wifi_get_ps(&ps);
+      wifi_bandwidth_t bw = WIFI_BW_HT20; esp_wifi_get_bandwidth(WIFI_IF_STA, &bw);
+      uint8_t prot = 0; esp_wifi_get_protocol(WIFI_IF_STA, &prot);
+      Serial.printf("WPS енергоощадження %s, смуга %s, протоколи 0x%02X, RSSI %d\n",
+                    ps == WIFI_PS_NONE ? "вимкнено" : ps == WIFI_PS_MIN_MODEM ? "MIN_MODEM (сон модему)" : "MAX_MODEM",
+                    bw == WIFI_BW_HT40 ? "40 МГц" : "20 МГц", (unsigned)prot, (int)WiFi.RSSI());
+    }
     else if(!strncmp(buf,"sfx ",4)){
       /*  sfx <подія або номер> — програти (навіть вимкнену)  */
       int e = YoSfx::find(buf + 4);
@@ -675,6 +815,13 @@ void yodbgLoop(){
     }
     else if(!strcmp(buf,"fade")){ Serial.printf("FADE %.3f\n", yoDsp.fadeLevel()); }
     else if(!strncmp(buf,"alarmtest ",10)){ int sec = atoi(buf + 10); if(sec >= 30 && sec <= 3600) extras.alarmTestOff((uint16_t)sec); else Serial.println("alarmtest <30..3600 с>"); }
+    else if(!strcmp(buf,"aunet")){
+      /*  Щосекундний звіт про потік (див. yoAuNetTick у main.cpp). Раніше тут була
+          i2srate з delay(5000) — вона сама зупиняла звук: команди виконує головний цикл.  */
+      extern volatile bool yoAuNet; yoAuNet = !yoAuNet;
+      Serial.printf("AUNET %s; I2S %.1f Гц, потік %u Гц\n", yoAuNet ? "увімкнено" : "вимкнено",
+                    (double)i2s_get_clk(I2S_NUM_0), (unsigned)player.getSampleRate());
+    }
     else if(!strcmp(buf,"audiostat")){
       extern volatile uint32_t yoAuUnderN, yoAuUnderMs, yoAuMinFill;
       static uint32_t t0 = 0; uint32_t now = millis();
@@ -911,6 +1058,7 @@ void yodbgLoop(){
     else if(!strcmp(buf,"rec"))            { if(recorder.active()) recorder.stop(); else if(!recorder.start()) Serial.printf("запис: %s\n", recorder.lastError()); }
     else if(!strcmp(buf,"recst"))          { Serial.printf("запис=%d %s %u байт %u с\n", recorder.active(), recorder.fileName(), (unsigned)recorder.bytes(), (unsigned)recorder.seconds()); }
     else if(!strcmp(buf,"serm"))           { sermons.fetch(); Serial.println("завантаження проповідей"); }
+    else if(!strncmp(buf,"sermplay ",9))   { const int i = atoi(buf + 9); Serial.printf("SERMPLAY %d: %s\n", i, sermons.play(i) ? "грає" : "недоступна"); }
     else if(!strcmp(buf,"sermls")){
       for(uint16_t i=0;i<sermons.count();i++){ const Sermon* s=sermons.at(i); Serial.printf("%2u %s | %s | %s | %u\n", i, s->date, s->title, s->preacher, s->dur); }
       Serial.printf("усього %u, помилка '%s', вантажиться=%d\n", sermons.count(), sermons.error(), sermons.loading());
@@ -922,6 +1070,31 @@ void yodbgLoop(){
     }
     else if(!strcmp(buf,"plstate")) touchscreen.dbgState();
     else if(!strcmp(buf,"reboot")) ESP.restart();
+    else if(!strncmp(buf,"eetest",6)){
+      /*  Скільки стоїть радіо, поки налаштування пишуться у флеш (EEPROM поверх NVS): міняємо
+          останній, невживаний байт області й зберігаємо N разів, потім повертаємо як було.  */
+      static_assert(EEPROM_START + sizeof(config_t) < EEPROM_SIZE - 1, "eetest: байт поза налаштуваннями");
+      int n = buf[6] == ' ' ? atoi(buf + 7) : 5; if(n < 1) n = 1; if(n > 20) n = 20;
+      const int a = EEPROM_SIZE - 1;
+      const uint8_t was = EEPROM.read(a);
+      uint32_t mx = 0, sum = 0;
+      for(int i = 0; i <= n; i++){
+        EEPROM.write(a, i == n ? was : (uint8_t)(was ^ (1 + (i & 1))));
+        const int64_t t0 = esp_timer_get_time();
+        EEPROM.commit();
+        const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+        if(us > mx) mx = us; sum += us;
+        Serial.printf("EETEST запис %d: %u мкс\n", i + 1, (unsigned)us); Serial.flush();
+        delay(150);
+      }
+      Serial.printf("EETEST %d записів: найдовший %u мкс, у середньому %u мкс; байт повернуто (%u)\n", n + 1, (unsigned)mx, (unsigned)(sum / (n + 1)), (unsigned)EEPROM.read(a));
+    }
+    else if(!strncmp(buf,"cmd ",4)){
+      /*  будь-яка команда yoRadio, як зі сторінки чи http://радіо/?play=37: «cmd play=37»  */
+      char* eq = strchr(buf + 4, '=');
+      if(!eq) Serial.println("cmd назва=значення");
+      else{ *eq = 0; extern CommandHandler cmd; Serial.printf("CMD %s=%s: %s\n", buf + 4, eq + 1, cmd.exec(buf + 4, eq + 1) ? "так" : "ні"); }
+    }
     else Serial.printf("DBG: невідома команда '%s'\n", buf);
   }
 }

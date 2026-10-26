@@ -5,6 +5,7 @@
 #include "network.h"
 #include "../extras/yoExtras.h"
 #include <esp_wifi.h>
+#include "lwip/tcpip.h"
 #include "display.h"
 #include "config.h"
 #include "telnet.h"
@@ -31,7 +32,35 @@ static RTC_NOINIT_ATTR uint32_t _noNetBoot;
 static const uint32_t NONET_MAGIC = 0x4E4F4E54;
 void MyNetwork::skipBootWifi(){ _noNetBoot = NONET_MAGIC; }
 
+/*  Ядро Arduino (NetworkManager::hostByName) на першому запиті після появи чи втрати
+    адреси чистить кеш DNS (dns_clear_cache) без замка lwIP. Очистка тут же викликає
+    всіх, хто чекав відповіді DNS (SNTP, задачі логотипів, потік), а ті лізуть у lwIP
+    без замка — assert «Required to lock TCPIP core functionality!». 26.10.2026 так
+    падали двічі: Audio::connectTask (прохід логотипів саме питав каталог) і
+    arduino_events (SNTP саме чекав відповіді). Компонувальник (firmware/rebuild.sh:
+    -Wl,--wrap=dns_clear_cache) веде виклик ядра сюди — чистимо під замком lwIP.  */
+extern "C" void __real_dns_clear_cache(void);
+extern "C" void __wrap_dns_clear_cache(void){
+  if(sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)){ __real_dns_clear_cache(); return; }
+  LOCK_TCPIP_CORE();
+  __real_dns_clear_cache();
+  UNLOCK_TCPIP_CORE();
+}
+
+/*  Перший запит після появи адреси робимо самі й одразу (з кешем це вже не
+    небезпечно — див. вище), а задачі логотипів чекають yoDnsWarm: щоб не лізли
+    в мережу раніше за потік.  */
+volatile bool yoDnsWarm = false;
+static void dnsWarm(){
+  const uint32_t t0 = millis();
+  IPAddress ip;
+  WiFi.hostByName("localhost", ip);
+  yoDnsWarm = true;
+  Serial.printf("##WIFI#\tкеш DNS підготовлено за %u мс\n", (unsigned)(millis() - t0));
+}
+
 void MyNetwork::WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info){
+  dnsWarm();                                     /* до того, як потік і служби підуть у мережу */
   Serial.printf("##WIFI#\tадреса %s%s\n", WiFi.localIP().toString().c_str(),
                 network.lostPlaying ? " — до обриву грало, вмикаю знову" : "");
   if(network._try == TRY_RUN) network._try = TRY_OK;
@@ -68,6 +97,7 @@ void MyNetwork::WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info){
 }
 
 void MyNetwork::WiFiLostConnection(WiFiEvent_t event, WiFiEventInfo_t info){
+  yoDnsWarm = false;
   /*  Спроба, яку замовила людина: одразу кажемо, чому не вийшло.  */
   if(network._try == TRY_RUN){
     uint8_t r = info.wifi_sta_disconnected.reason;
@@ -269,6 +299,7 @@ void MyNetwork::begin() {
 }
 
 void MyNetwork::setWifiParams(){
+  if(!yoDnsWarm && WiFi.status() == WL_CONNECTED) dnsWarm();
   WiFi.setSleep(false);
   /*  Перепідключенням керуємо самі (loop()): у ядра воно без пауз і без
       переходу на інші збережені мережі.  */

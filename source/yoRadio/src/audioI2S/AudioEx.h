@@ -528,6 +528,9 @@ private:
     uint8_t         m_streamType = ST_NONE;
     uint8_t         m_ID3Size = 0;                  // lengt of ID3frame - ID3header
     int16_t         m_outBuff[2048*2];              // Interleaved L/R
+    bool            m_wavWide = false;              /* WAV не 1–2 × 16 біт: зводимо самі (wavWideMix) */
+    uint8_t         m_wavCh = 0, m_wavBytes = 0;    /* каналів і байтів на відлік у такому WAV */
+    uint16_t        m_wavAlign = 0;                 /* байтів на кадр (усі канали) */
     int16_t         m_validSamples = 0;
     int16_t         m_curSample = 0;
     uint16_t        m_datamode = 0;                 // Statemaschine

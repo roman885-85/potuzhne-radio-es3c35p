@@ -160,9 +160,16 @@ static const char* const GUARD_LBL[3] = { "вимк", "м'який", "сильн
 static const char* const VB_LBL[4]    = { "вимк", "1", "2", "3" };
 static const char* const LOUD_LBL[3]  = { "вимк", "м'яка", "сильна" };
 static void sndChanged(){ extras.changed(); yoDsp.changed(); }
+/*  Захист динаміка діє лише там, де динамік: вбудований чи MAX98357A. З ЦАП на лінію
+    перемикач нічого не міняв — власник 26.10.2026: «функції обробки не працюють». Кажемо прямо.  */
+static const char* vGuardNote(){
+  return (extras.s.dac == 0 || extras.s.dac == 3) ? "зрізає низ, який динамік не грає, а хрипить"
+                                                  : "ЦАП на лінію: захист не потрібен";
+}
 static Item s_sndItems[] = {
   iSection("ДИНАМІК"),
   iSeg("Захист динаміка", GUARD_LBL, 3, [](){ return (int32_t)extras.s.eqGuard; }, [](int32_t v){ extras.s.eqGuard = v; sndChanged(); }),
+  iNote(vGuardNote, 22),
   iSeg("Віртуальний бас", VB_LBL, 4, [](){ return (int32_t)extras.s.vbass; }, [](int32_t v){ extras.s.vbass = v; sndChanged(); }),
   iSeg("Тонкомпенсація, коли тихо", LOUD_LBL, 3, [](){ return (int32_t)extras.s.eqLoud; }, [](int32_t v){ extras.s.eqLoud = v; sndChanged(); }),
   iSection("СТЕРЕО"),

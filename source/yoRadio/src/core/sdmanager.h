@@ -22,10 +22,13 @@ class SDManager : public SDBASEFS {
     bool cardPresent();
     void listSD(File &plSDfile, File &plSDindex, const char * dirname, uint8_t levels);
     void indexSDPlaylist();
+    bool sigSame();                     /* картка та сама, що при останньому індексі (розмір і зайняте місце) */
   private:
     uint32_t _sdFCount;
   private:
     bool _checkNoMedia(const char* path);
+    void _sig(char* b, size_t n);
+    void _sigSave();
     bool _endsWith (const char* base, const char* str);
 };
 

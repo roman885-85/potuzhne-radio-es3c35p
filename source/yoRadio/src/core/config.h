@@ -18,6 +18,7 @@
 
 #define PLAYLIST_SD_PATH     "/data/playlistsd.csv"
 #define INDEX_SD_PATH        "/data/indexsd.dat"
+#define SIG_SD_PATH          "/data/indexsd.sig"   /* відбиток картки: розмір і зайняте місце на час індексу */
 
 #define REAL_PLAYL   config.getMode()==PM_WEB?PLAYLIST_PATH:PLAYLIST_SD_PATH
 #define REAL_INDEX   config.getMode()==PM_WEB?INDEX_PATH:INDEX_SD_PATH
@@ -216,6 +217,7 @@ class Config {
     bool _readSsids();            /* читання /data/wifi.csv у ssids[] */
     bool saveWifi();
     void setTimeConf();
+    void applyTz();                     /* пояс (і літній час) — у системний годинник, без перезапуску SNTP */
     bool saveWifiFromNextion(const char* post);
     /*  правка списку відомих мереж без перезавантаження  */
     bool saveWifiList(const char* text);

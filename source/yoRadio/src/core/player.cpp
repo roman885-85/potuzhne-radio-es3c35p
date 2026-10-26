@@ -48,7 +48,7 @@ void Player::init() {
   playerQueue=NULL;
   _resumeFilePos = 0;
   _hasError=false;
-  playerQueue = xQueueCreate( 5, sizeof( playerRequestParams_t ) );
+  playerQueue = xQueueCreate( 10, sizeof( playerRequestParams_t ) );
   setOutputPins(false);
   delay(50);
 #if defined(MQTT_ROOT_TOPIC) || defined(YO_BROWSEURL)
@@ -90,7 +90,13 @@ void Player::init() {
 
 void Player::sendCommand(playerRequestParams_t request){
   if(playerQueue==NULL) return;
-  xQueueSend(playerQueue, &request, PLQ_SEND_DELAY);
+  /*  Щосекундні службові команди (перевірка картки, поріг індикатора) — лише в майже порожню
+      чергу. Поки радіо стартує, головний цикл чергу ще не розбирає, і за кілька секунд вони
+      займали всі місця: «грати після ввімкнення» губилось — радіо після ввімкнення мовчало
+      (26.10.2026, видно з журналу черги).  */
+  if((request.type == PR_CHECKSD || request.type == PR_VUTONUS) && uxQueueMessagesWaiting(playerQueue) >= 2) return;
+  if(xQueueSend(playerQueue, &request, PLQ_SEND_DELAY) != pdTRUE)
+    Serial.printf("##PLAYER#\tчерга плеєра повна — команду %d загублено\n", (int)request.type);
 }
 
 void Player::resetQueue(){
@@ -174,6 +180,7 @@ void Player::loop() {
     switch (requestP.type){
       case PR_STOP: _fadeOutWait(); _stop(); break;
       case PR_PLAY: {
+        Serial.printf("##PLAYER#\tграти %d\n", (int)requestP.payload);
         _fadeOutWait();
         if (requestP.payload>0) {
           config.setLastStation((uint16_t)requestP.payload);
@@ -394,6 +401,12 @@ void Player::_play(uint16_t stationId) {
   if(isConnected){
     _status = PLAYING;
     config.configPostPlaying(stationId);
+    /*  Тиша між станціями (з'єднались, але звуку ще нема: буфер тільки набирається) — час
+        записати налаштування у флеш: запис зупиняє обидва ядра на 9–94 мс, посеред звуку це
+        провал (див. Config::eepromLoop). Саме тут — щоб уже з остаточними «остання станція»
+        й «грати після ввімкнення»: інакше після вимкнення живлення радіо само не заграло б.  */
+    config.commitNow();
+    extras.saveNow();
     setOutputPins(true);
     if (player_on_start_play) player_on_start_play();
     pm.on_start_play();

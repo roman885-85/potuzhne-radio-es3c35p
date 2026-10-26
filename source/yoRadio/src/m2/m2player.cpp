@@ -124,10 +124,10 @@ void Player::_loadLogo(){
       if(f) f.close();
     }else if(config.station.url[0]){
       /*  логотипа ще нема — попросити пошук (як і старий плеєр), якщо минулого разу не позначили «нема»  */
-      snprintf(path, sizeof(path), "/logo/%08x.no", (unsigned)key);
-      /*  не почалось (пошук іншого логотипа ще йде, мережа не готова) — спробуємо
+      /*  «нема» — тепер список у пам'яті (logos.isNo), а не файл на кожну станцію.
+          Не почалось (пошук іншого логотипа ще йде, мережа не готова) — спробуємо
           ще раз за кілька секунд, а не лише коли зміниться станція  */
-      if(!SPIFFS.exists(path) && !logos.want(config.station.url, config.station.name)) _logoRetryT = millis() | 1;
+      if(!logos.isNo(key) && !logos.want(config.station.url, config.station.name)) _logoRetryT = millis() | 1;
     }
     if(ok){
       if(!_logo) _logo = (uint16_t*)heap_caps_malloc(LOGO * LOGO * 2, MALLOC_CAP_SPIRAM);
@@ -262,7 +262,7 @@ void Player::_drawTop(Gfx& g, uint32_t now){
   if(!g.visible(0, 0, SW, TOP_H)) return;
   /*  джерело  */
   g.circle(20, 19, 14, C_SURF);
-  uint8_t src = (dlna.playing() || player.extOn) ? IC_SPEAKER : (player.remoteStationName ? IC_CROSS : (config.getMode() == PM_SDCARD ? IC_CARD : IC_RADIO));
+  uint8_t src = (dlna.playing() || player.extOn) ? IC_SPEAKER : (player.remoteStationName ? IC_BACK : (config.getMode() == PM_SDCARD ? IC_CARD : IC_RADIO));
   icon(g, src, 20, 19, C_ACC, C_SURF);
   /*  меню  */
   g.circle(SW - 20, 19, 14, C_SURF);
@@ -587,7 +587,11 @@ void Player::_drawVol(Gfx& g){
     повністю) гасне за 260 мс.  */
 void Player::_ripple(Gfx& g){
   if(!_rf.on) return;
-  const int32_t age = (int32_t)(_frameT - _rf.t0);
+  /*  як у списках (Menu::_ripStart): хвиля — через 90 мс або від відпускання, щоб жест
+      угору-вниз (до списку станцій) не спалахував під пальцем  */
+  const uint32_t st = (_rf.rel && (int32_t)(_rf.up - (_rf.t0 + 90)) < 0) ? _rf.up : _rf.t0 + 90;
+  if((int32_t)(_frameT - st) < 0) return;
+  const int32_t age = (int32_t)(_frameT - st);
   float k = age <= 0 ? 0 : age / 280.0f; if(k > 1) k = 1;
   const float rad = 10 + SW * (1 - (1 - k) * (1 - k) * (1 - k));    /* до найдальшого кута картки */
   float a = 50;
@@ -787,9 +791,14 @@ void Player::render(){
     /*  гучність  */
     if((uint32_t)config.store.volume != _sVol){ _sVol = config.store.volume; _mark(0, VOL_Y, SW, VOL_H); }
   }
-  /*  плавна гучність: показане значення наздоганяє ціль (палець, енкодер, веб)  */
-  {
-    float target = _volDrag >= 0 ? (float)_volDrag : (float)config.store.volume;
+  /*  плавна гучність: показане значення наздоганяє ціль (енкодер, веб, мікрофон). Під пальцем
+      — без наздоганяння: смуга йде за пальцем одразу (власник 26.10.2026: «полоска гучності
+      гальмує» — показане відставало на кілька кадрів).  */
+  if(_volDrag >= 0){
+    if(_volShownF != (float)_volDrag){ _volShownF = (float)_volDrag; _mark(0, VOL_Y, SW, VOL_H); }
+  }
+  else{
+    float target = (float)config.store.volume;
     if(_volShownF < 0) _volShownF = target;
     if(fabsf(target - _volShownF) > 0.5f){
       _volShownF += (target - _volShownF) * 0.35f;
@@ -927,7 +936,10 @@ void Player::onPress(int16_t x, int16_t y){
 void Player::onDrag(int16_t x, int16_t y){
   _lx = x; _ly = y;
   /*  повели пальцем (до списку станцій) — хвиля гасне  */
-  if(_ripOn && !_ripRel && (abs(x - _px) > 14 || abs(y - _py) > 14)){ _ripUpT = millis(); _ripRel = true; }
+  if(_ripOn && !_ripRel && (abs(x - _px) > 14 || abs(y - _py) > 14)){
+    if(millis() - _ripT0 < 90) _ripOn = false;      /* хвиля ще не почалась — жест, а не дотик: без неї */
+    else { _ripUpT = millis(); _ripRel = true; }
+  }
   if(_zone == 20) return;
   if(_zone == 5){
     /*  доріжка 49..255; краї липкі — біля кінця одразу мінімум чи максимум  */
@@ -999,7 +1011,13 @@ void Player::onRelease(int16_t x, int16_t y){
   /*  довгий дотик по годиннику чи картці — список станцій, як і раніше  */
   if((z == 3 || z == 6) && millis() - _pt > 700){ display.putRequest(NEWMODE, STATIONS); return; }
   switch(z){
-    case 0: if(!extras.s.noSd) config.changeMode(); break;
+    case 0:
+      /*  У проповіді тут стрілка «назад»: проповідь стає (місце запам'ятовується), грає
+          радіо — остання станція. Раніше той самий дотик перемикав на картку пам'яті:
+          проповідь лишалась на екрані, а «Станції» в меню відкривали картку.  */
+      if(player.remoteStationName && !dlna.playing() && !player.extOn){ player.sendCommand({PR_PLAY, config.lastStation()}); break; }
+      if(!extras.s.noSd) config.changeMode();
+      break;
     case 1: display.putRequest(NEWMODE, STATIONS); break;
     case 2: yomenu.openHome(); break;
     case 3: player.toggle(); _mark(MX, CARD_Y, CWID, _cardH()); break;

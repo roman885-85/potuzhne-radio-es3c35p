@@ -8,8 +8,21 @@
 #include "yoSermons.h"          /* yoJpegFit */
 #include "../core/options.h"
 #include "../core/config.h"      /* PLAYLIST_PATH */
+#include "../core/player.h"      /* запас у буфері потоку */
 
 YoLogos logos;
+
+/*  Список «нема логотипа» (див. noLoad нижче): у PSRAM і одним файлом.  */
+#define LG_NOLIST "/logo/no.lst"
+static uint32_t* s_no = nullptr;
+static uint16_t  s_noN = 0, s_noCap = 0;
+static volatile bool s_noLoaded = false;
+static bool      s_noDirty = false, s_passDone = false, s_passDone0 = false;
+static bool noHas(uint32_t c);
+static void noAdd(uint32_t c);
+static void noLoad();
+static void noSave();
+static void waitStream();
 
 bool yoStbDecode(const uint8_t* d, size_t n, uint8_t** rgba, uint32_t* W, uint32_t* H);   /* yoStbImage.cpp */
 
@@ -519,9 +532,12 @@ static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap){
 static volatile bool s_inNet = false;          /* іде запит (TLS тримає пам'ять) */
 bool YoLogos::netBusy() const { return s_inNet; }
 
-static int httpGet(const char* url, uint8_t* buf, size_t cap){
+/*  tries: 6 — для каталогу (його сервер рве ~70 % з'єднань), 2 — для значків на інших
+    сайтах: невдалі спроби до мертвого сервера йдуть під час гри, і кожна заважала
+    потоку (26.10.2026: провали звуку саме на «Радіо Промінь: мережа … (повторів 5)»).  */
+static int httpGet(const char* url, uint8_t* buf, size_t cap, uint8_t tries = 6){
   struct NetMark { NetMark(){ s_inNet = true; } ~NetMark(){ s_inNet = false; } } mark;
-  for(uint8_t a = 0; a < 6; a++){
+  for(uint8_t a = 0; a < tries; a++){
     if(a){ s_tries++; vTaskDelay(pdMS_TO_TICKS(1500)); }
     int n = httpGetOnce(url, buf, cap);
     if(n >= 0) return n;
@@ -811,23 +827,11 @@ bool YoLogos::want(const char* url, const char* name){
 }
 
 uint16_t YoLogos::forget(){
-  /*  Імена — у PSRAM: кнопка «Шукати знову» виконується в головному циклі, а там
-      вільного стека ~3,7 КБ — 2 КБ масиву на ньому було забагато.  */
-  const uint16_t CAP = 200;
-  char (*names)[32] = (char (*)[32])ps_malloc((size_t)CAP * 32);
-  if(!names) return 0;
-  uint16_t n = 0, k = 0;
-  File dir = SPIFFS.open("/");
-  if(dir){
-    for(File f = dir.openNextFile(); f && k < CAP; f = dir.openNextFile()){
-      const char* nm = f.path();
-      if(strstr(nm, "/logo/") && strstr(nm, ".no") && !strstr(nm, "all")) strlcpy(names[k++], nm, 32);
-      f.close();
-    }
-    dir.close();
-  }
-  for(uint16_t i = 0; i < k; i++){ SPIFFS.remove(names[i]); n++; }
-  free(names);
+  /*  «Шукати знову»: список «нема» — порожній, файл списку — геть (один запис).
+      Виконується в головному циклі: файлів не обходимо (це робить задача, noLoad).  */
+  const uint16_t n = s_noN;
+  s_noN = 0; s_noDirty = false; s_passDone = s_passDone0 = false;
+  if(SPIFFS.exists(LG_NOLIST)) SPIFFS.remove(LG_NOLIST);
   return n;
 }
 
@@ -882,8 +886,8 @@ int YoLogos::_one(){
             if(digits){ char tail[200]; strlcpy(tail, px, sizeof(tail)); snprintf(seg + 1, sizeof(fav) - (seg + 1 - fav), "250%s", tail); }
           }
         }
-        n = httpGet(fav, buf, LG_MAXDL);
-        if(n < 0){ result = -1; break; }
+        n = httpGet(fav, buf, LG_MAXDL, 2);
+        if(n < 0) continue;                       /* сайт значка не відповів — мертве посилання, наступний кандидат */
         uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
         if(px && n > 0 && yoImageFit(buf, n, px, LOGO_S, LOGO_S)){
           char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
@@ -907,7 +911,7 @@ int YoLogos::_one(){
         for(uint8_t v = 0; v < 2 && !ni; v++){
           snprintf(base, sizeof(base), v ? "https://www.%s" : "https://%s", site);
           char home[110]; snprintf(home, sizeof(home), "%s/", base);
-          n = httpGet(home, buf, 512 * 1024);
+          n = httpGet(home, buf, 512 * 1024, 2);
           if(n > 0){ buf[n] = 0; ni = siteIcons((const char*)buf, n, base, ic, 10); }
         }
         /*  порядок: великі значки (≥ 96) → середина og:image → дрібніші → служба Google  */
@@ -928,8 +932,8 @@ int YoLogos::_one(){
           char cu[220]; float crop = 0;
           if(order[k] < 0) snprintf(cu, sizeof(cu), "https://www.google.com/s2/favicons?domain=%s&sz=128", site);
           else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = -1; }   /* банер — межі логотипа */
-          n = httpGet(cu, buf, LG_MAXDL);
-          if(n < 0){ result = -1; break; }
+          n = httpGet(cu, buf, LG_MAXDL, 2);
+          if(n < 0) continue;                     /* не відповів — наступний; усі — «нема» (кнопка «Шукати знову» спробує ще) */
           uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
           if(px && n > 64 && yoImageFit(buf, n, px, LOGO_S, LOGO_S, crop)){
             char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
@@ -943,10 +947,7 @@ int YoLogos::_one(){
   }
   if(buf) free(buf);
   if(js) free(js);
-  if(result == 0){                             /* нема — не питати щоразу */
-    char path[28]; snprintf(path, sizeof(path), "/logo/%08x.no", (unsigned)_crc);
-    File o = SPIFFS.open(path, "w"); if(o){ o.print("1"); o.close(); }
-  }
+  if(result == 0) noAdd(_crc);                 /* нема — у список (у файл — наприкінці, одним записом) */
   Serial.printf("##LOGO#\t%s: %s %s (повторів %u)\n", _name, result > 0 ? "знайдено" : result == 0 ? "нема" : "мережа", fav, s_tries);
   if(result > 0) _ver++;
   return result;
@@ -954,9 +955,14 @@ int YoLogos::_one(){
 
 void YoLogos::_task(void* arg){
   YoLogos* s = (YoLogos*)arg;
-  if(!s->_quick) vTaskDelay(pdMS_TO_TICKS(3000));   /* нехай станція спершу підключиться */
+  noLoad();
+  if(!noHas(crc(s->_url))){
+    if(!s->_quick) vTaskDelay(pdMS_TO_TICKS(3000));   /* нехай станція спершу підключиться */
+    waitStream();                                     /* і набере запас у буфері */
+    s->_one();
+    noSave();
+  }
   s->_quick = false;
-  s->_one();
   s->_busy = false;
   vTaskDelete(nullptr);
 }
@@ -990,23 +996,112 @@ void YoLogos::_testTask(void* arg){
   vTaskDelete(nullptr);
 }
 
-/*  ---------- усі станції списку ---------- */
-/*  «all3»: прохід із розумнішим пошуком, переадресаціями й stb_image (25.10.2026) — старі
-    позначки «нема» один раз скидаються, і всі станції без логотипа шукаються наново.  */
-#define LG_ALLFLAG "/logo/all7.ok"
+/*  ---------- «нема логотипа»: один список, а не файл на станцію ----------
+    Власник 26.10.2026: «SPIFFS не должен использоваться как кеш или хранилищем с
+    постоянной перезаписью — это медленно и быстро убьёт устройство». Тож: список
+    станцій без логотипа — у PSRAM і одним файлом /logo/no.lst (перший рядок — «done»,
+    якщо повний прохід уже був без мережевих збоїв), пишеться лише коли список
+    змінився. Раніше — окремий .no на кожну станцію плюс позначки проходів (і я їх
+    кілька разів переписував). Старі файли переносяться в список один раз і стираються.
+    Запис у флеш вимикає кеш обох ядер на десятки мс — ще й тому його має бути мало.  */
 
+static bool noHas(uint32_t c){ for(uint16_t i = 0; i < s_noN; i++) if(s_no[i] == c) return true; return false; }
+static void noAdd(uint32_t c){
+  if(noHas(c)) return;
+  if(s_noN >= s_noCap){
+    uint16_t nc = s_noCap ? s_noCap * 2 : 64;
+    uint32_t* n = (uint32_t*)heap_caps_realloc(s_no, (size_t)nc * 4, MALLOC_CAP_SPIRAM);
+    if(!n) return;
+    s_no = n; s_noCap = nc;
+  }
+  s_no[s_noN++] = c; s_noDirty = true;
+}
+
+/*  З задачі логотипа (не з головного циклу: обхід SPIFFS довгий).  */
+static void noLoad(){
+  if(s_noLoaded) return;
+  File f = SPIFFS.open(LG_NOLIST, "r");
+  if(f){
+    String h = f.readStringUntil('\n'); h.trim();
+    s_passDone = s_passDone0 = (h == "done");
+    while(f.available()){
+      String l = f.readStringUntil('\n'); l.trim();
+      if(l.length() == 8) noAdd((uint32_t)strtoul(l.c_str(), nullptr, 16));
+    }
+    f.close();
+    s_noDirty = false;
+  }
+  /*  перенести старі позначки (по файлу на станцію, позначки проходів) — один раз  */
+  const uint16_t CAP = 200;
+  char (*old)[32] = (char (*)[32])ps_malloc((size_t)CAP * 32);
+  uint16_t k = 0;
+  if(old){
+    File dir = SPIFFS.open("/");
+    if(dir){
+      for(File e = dir.openNextFile(); e && k < CAP; e = dir.openNextFile()){
+        const char* nm = e.path();
+        if(strstr(nm, "/logo/") && (strstr(nm, ".no") || strstr(nm, "/all")) && !strstr(nm, "no.lst")) strlcpy(old[k++], nm, 32);
+        e.close();
+      }
+      dir.close();
+    }
+    for(uint16_t i = 0; i < k; i++){
+      const char* b = strrchr(old[i], '/') + 1;
+      if(strlen(b) == 11 && !strcmp(b + 8, ".no")){ char hx[9]; memcpy(hx, b, 8); hx[8] = 0; noAdd((uint32_t)strtoul(hx, nullptr, 16)); }
+      SPIFFS.remove(old[i]);
+    }
+    free(old);
+    if(k) Serial.printf("##LOGO#\tстарі позначки перенесено в один список: %u файлів\n", (unsigned)k);
+  }
+  s_noLoaded = true;
+}
+
+static void noSave(){
+  if(!s_noDirty && s_passDone == s_passDone0) return;
+  File o = SPIFFS.open(LG_NOLIST, "w");
+  if(!o) return;
+  o.print(s_passDone ? "done\n" : "todo\n");
+  for(uint16_t i = 0; i < s_noN; i++) o.printf("%08x\n", (unsigned)s_no[i]);
+  o.close();
+  s_noDirty = false; s_passDone0 = s_passDone;
+}
+
+bool YoLogos::isNo(uint32_t c) const { return s_noLoaded && noHas(c); }
+
+/*  Не заважати потоку: мережевий пошук — лише коли в буфері потоку є запас
+    (≥ 2 с звуку, від 16 до 48 КБ). 26.10.2026 обидва провали звуку за 5 хв
+    припали саме на пошук логотипа (буфер потоку — 2 КБ).  */
+extern volatile bool yoDnsWarm;                  /* core/network.cpp */
+static void waitStream(){
+  /*  перший запит DNS після появи адреси робить мережа сама (див. dnsWarm) — чекаємо  */
+  for(uint16_t i = 0; i < 100 && !yoDnsWarm; i++) vTaskDelay(pdMS_TO_TICKS(100));
+  for(uint16_t i = 0; i < 300; i++){             /* до хвилини */
+    if(!player.isRunning() || player.remoteStationName) return;
+    uint32_t need = (uint32_t)config.station.bitrate * 1000 / 8 * 2;
+    if(need < 16384) need = 16384;
+    if(need > 49152) need = 49152;
+    if(player.inBufferFilled() >= need) return;
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+}
+
+/*  ---------- усі станції списку ---------- */
 /*  Список «назва<Tab>адреса<Tab>гучність» — у PSRAM, один раз за прохід.  */
 struct LgSt { char name[64]; char url[200]; };
 
-/*  Окрема задача на весь прохід: головний цикл (дотик, звук) файлів не читає.  */
+/*  Окрема задача на весь прохід: головний цикл (дотик, звук) файлів не читає.
+    Прохід — раз за увімкнення і лише доки не було повного без мережевих збоїв
+    (у списку «done»). Повторів кожні 10 хвилин більше немає: мережа, що не
+    відповіла, — наступного увімкнення.  */
 void YoLogos::_allTask(void* arg){
   YoLogos* s = (YoLogos*)arg;
-  if(s->_bForget){
-    const uint16_t k = s->forget();
-    File o = SPIFFS.open("/logo/all7.no", "w"); if(o){ o.print("1"); o.close(); }
-    s->_bForget = false;
-    Serial.printf("##LOGO#\tпозначок «нема» скинуто: %u\n", (unsigned)k);
+  noLoad();
+  if(s->_bForget){ s->_bForget = false; }
+  if(s_passDone && !s->_bForce){
+    Serial.println("##LOGO#\tусі логотипи: прохід уже був — не повторюємо");
+    s->_bOn = false; s->_busy = false; vTaskDelete(nullptr);
   }
+  s->_bForce = false;
   LgSt* st = nullptr;
   uint16_t n = 0;
   File f = SPIFFS.open(PLAYLIST_PATH, "r");
@@ -1034,10 +1129,9 @@ void YoLogos::_allTask(void* arg){
     s->_bI = i + 1;
     if(!st[i].url[0]) continue;
     const uint32_t c = crc(st[i].url);
+    if(noHas(c)) continue;
     char p[28];
     snprintf(p, sizeof(p), "/logo/%08x.565", (unsigned)c);
-    if(SPIFFS.exists(p)) continue;
-    snprintf(p, sizeof(p), "/logo/%08x.no", (unsigned)c);
     if(SPIFFS.exists(p)) continue;
     /*  обкладинка проповіді просить мережу — чекаємо (до 2 хв)  */
     for(uint16_t w2 = 0; s->_hold && w2 < 600; w2++) vTaskDelay(pdMS_TO_TICKS(200));
@@ -1045,22 +1139,20 @@ void YoLogos::_allTask(void* arg){
     uint16_t w = 0;
     while(WiFi.status() != WL_CONNECTED && w < 600){ vTaskDelay(pdMS_TO_TICKS(100)); w++; }
     if(WiFi.status() != WL_CONNECTED){ complete = false; break; }
+    waitStream();
     strlcpy(s->_url, st[i].url, sizeof(s->_url));
     strlcpy(s->_name, st[i].name, sizeof(s->_name));
     const int r = s->_one();
     if(r > 0) s->_bFound++;
-    else if(r < 0) s->_bNet++;                  /* мережа — цю станцію наступного проходу ще раз */
-    vTaskDelay(pdMS_TO_TICKS(1500));            /* пауза між станціями: проповіді теж ходять у мережу */
+    else if(r < 0) s->_bNet++;                  /* мережа — цю станцію наступного увімкнення ще раз */
+    vTaskDelay(pdMS_TO_TICKS(3000));            /* пауза між станціями: потік і проповіді теж ходять у мережу */
   }
   if(s->_bNet) complete = false;
   if(st) heap_caps_free(st);
-  if(complete && s->_bOn){
-    File o = SPIFFS.open(LG_ALLFLAG, "w");
-    if(o){ o.print("1"); o.close(); }
-  }
+  if(complete && s->_bOn) s_passDone = true;
+  noSave();                                     /* один запис — і лише якщо список змінився */
   Serial.printf("##LOGO#\tусі логотипи: %s — знайдено нових %u, мережа не відповіла %u, станцій %u\n",
-                complete ? "готово" : "ще раз за 10 хв", (unsigned)s->_bFound, (unsigned)s->_bNet, (unsigned)n);
-  s->_bAgainAt = complete ? 0 : (millis() + 600000UL) | 1;
+                complete ? "готово" : "решту — наступного увімкнення", (unsigned)s->_bFound, (unsigned)s->_bNet, (unsigned)n);
   s->_bOn = false;
   s->_busy = false;
   vTaskDelete(nullptr);
@@ -1069,24 +1161,21 @@ void YoLogos::_allTask(void* arg){
 void YoLogos::fetchAll(){
   if(_bOn) return;
   if(_busy){ _bPending = true; return; }       /* іде пошук для станції, що грає, — почнемо слідом */
-  _bN = config.playlistLength(); _bI = 0; _bFound = 0; _bNet = 0; _bAgainAt = 0;
+  _bN = config.playlistLength(); _bI = 0; _bFound = 0; _bNet = 0;
   _busy = true; _bOn = true;
   if(xTaskCreatePinnedToCore(_allTask, "logoall", 16384, this, 0, nullptr, 0) != pdPASS){
     _busy = false; _bOn = false; _bPending = true;   /* пам'яті зараз немає — спробуємо пізніше */
   }
 }
 
+/*  Кнопка «Завантажити всі логотипи» — прохід навіть якщо вже був.  */
+void YoLogos::fetchAllForce(){ _bForce = true; fetchAll(); }
+
 void YoLogos::loop(){
   static bool autoDone = false;
   static uint32_t pendT = 0;
-  if(!autoDone && WiFi.status() == WL_CONNECTED && millis() > 25000){
-    autoDone = true;
-    if(!SPIFFS.exists(LG_ALLFLAG)){                /* разово: позначка — після повного проходу без мережевих збоїв */
-      _bForget = !SPIFFS.exists("/logo/all7.no");  /* перший прохід розумнішого пошуку: позначки «нема» з минулого — геть (у задачі) */
-      fetchAll();
-    }
-  }
-  if(_bAgainAt && !_bOn && (int32_t)(millis() - _bAgainAt) >= 0 && WiFi.status() == WL_CONNECTED){ _bAgainAt = 0; fetchAll(); }
+  /*  раз за увімкнення (задача сама вирішить, чи прохід уже був)  */
+  if(!autoDone && WiFi.status() == WL_CONNECTED && millis() > 25000){ autoDone = true; fetchAll(); }
   if(_bPending && !_busy && WiFi.status() == WL_CONNECTED && millis() - pendT > 5000){
     pendT = millis(); _bPending = false; fetchAll();
   }

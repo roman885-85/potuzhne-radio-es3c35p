@@ -180,8 +180,11 @@ void TimeKeeper::_upClock(){
   if(config.isRTCFound()) rtc.getTime(&network.timeinfo);
 #else
   if(network.timeinfo.tm_year>100 || network.status == SDREADY) {
-    network.timeinfo.tm_sec++;
-    mktime(&network.timeinfo);
+    /*  Годинник — із системного часу (його ставить SNTP): з поясом і літнім часом
+        і без набігання. Колись тут лише додавали секунду до збереженого.  */
+    const time_t now = time(nullptr);
+    if(now > 1600000000) localtime_r(&now, &network.timeinfo);
+    else { network.timeinfo.tm_sec++; mktime(&network.timeinfo); }
   }
 #endif
   if(display.ready()) display.putRequest(CLOCK);
@@ -222,7 +225,7 @@ void TimeKeeper::_upRSSI(){
     if(display.ready()) display.putRequest(DSPRSSI, netserver.getRSSI());
   }
 #ifdef USE_SD
-  if(display.mode()!=SDCHANGE) player.sendCommand({PR_CHECKSD, 0});
+  if(display.mode()!=SDCHANGE && config.getMode()==PM_SDCARD) player.sendCommand({PR_CHECKSD, 0});   /* картку перевіряти лише тоді, коли грає з неї */
 #endif
   player.sendCommand({PR_VUTONUS, 0});
 }

@@ -18,9 +18,11 @@
 #include "../extras/yoMic.h"
 #include "../extras/yoDsp.h"
 #include "../extras/yoI2sLock.h"
-volatile uint32_t yoAuUnderN = 0, yoAuUnderMs = 0, yoAuMinFill = 0xFFFFFFFF;   /* audiostat */
-volatile bool yoAuLog = true;
 #include "esp_timer.h"
+volatile uint32_t yoAuUnderN = 0, yoAuUnderMs = 0, yoAuMinFill = 0xFFFFFFFF;   /* audiostat */
+volatile uint32_t yoAuSamples = 0;                                              /* aunet: відліків віддано */
+volatile uint32_t yoNetRx = 0, yoNetAvMax = 0, yoI2sWaitUs = 0;                 /* aunet: з мережі, найбільше available(), чекання I2S */
+volatile bool yoAuLog = true;
 
 /*  Вивід у I2S пачками. Бібліотека віддавала драйверу кожен відлік окремим
     i2s_write — 44 тисячі викликів на секунду з м'ютексом і чергою всередині.
@@ -35,7 +37,10 @@ static void yoOutFlush(uint8_t port){
     size_t off = 0;
     while(off < len){
         size_t w = 0;
-        if(i2s_write((i2s_port_t)port, (const char*)s_ob + off, len - off, &w, pdMS_TO_TICKS(100)) != ESP_OK || !w) break;
+        const int64_t t0 = esp_timer_get_time();
+        const esp_err_t e = i2s_write((i2s_port_t)port, (const char*)s_ob + off, len - off, &w, pdMS_TO_TICKS(100));
+        yoI2sWaitUs += (uint32_t)(esp_timer_get_time() - t0);
+        if(e != ESP_OK || !w) break;
         off += w;
     }
     s_on = 0;
@@ -1351,23 +1356,45 @@ int Audio::read_WAV_Header(uint8_t* data, size_t len) {
         AUDIO_INFO("DataBlockSize: %u", dbs);
         AUDIO_INFO("BitsPerSample: %u", bps);
 
-        if((bps != 8) && (bps != 16)){
-            AUDIO_INFO("BitsPerSample is %u,  must be 8 or 16" , bps);
+        /*  Пульт (Behringer X-LIVE) пише 16/32 канали по 32 біти, 48 кГц, студійні файли — 24 біти.
+            Такі зводимо в стерео 16 біт самі (wavWideMix у sendBytes): 1–2 канали — як є, більше —
+            усі разом. 26.10.2026 власник: «те, що на картці бачить, не грає» — то були записи
+            X-LIVE (16 каналів × 32 біти), а бібліотека брала лише 8/16 біт і 1–2 канали.  */
+        if((bps != 8) && (bps != 16) && (bps != 24) && (bps != 32)){
+            AUDIO_INFO("BitsPerSample is %u,  must be 8, 16, 24 or 32" , bps);
             stopSong();
             return -1;
         }
-        if((nic != 1) && (nic != 2)){
-            AUDIO_INFO("num channels is %u,  must be 1 or 2" , nic); audio_info(chbuf);
+        if(nic < 1 || nic > 32){
+            AUDIO_INFO("num channels is %u,  must be 1..32" , nic);
             stopSong();
             return -1;
         }
-        if(fc != 1) {
+        if(fc != 1 && fc != 0xFFFE) {                    /* PCM або WAVE_FORMAT_EXTENSIBLE (з PCM) */
             AUDIO_INFO("format code is not 1 (PCM)");
             stopSong();
             return -1 ; //false;
         }
-        setBitsPerSample(bps);
-        setChannels(nic);
+        m_wavWide = bps > 16 || nic > 2;
+        if(m_wavWide && (bps == 8 || dbs != nic * (bps / 8))){
+            AUDIO_INFO("WAV: %u каналів по %u біт — такого не граю", nic, bps);
+            stopSong();
+            return -1;
+        }
+        if(m_wavWide){
+            m_wavCh = (uint8_t)nic; m_wavBytes = (uint8_t)(bps / 8); m_wavAlign = dbs;
+            /*  Розбирати великими шматками: 16 каналів × 32 біти — це 3 МБ/с, і по 1,6 КБ (25 кадрів)
+                за оберт головного циклу звук не встигав (31 тис. відліків на секунду замість 48).
+                Шмат — до 16 КБ (стільки запасу в кінці буфера) і не більше за 2048 кадрів (m_outBuff).  */
+            uint32_t fr = 16384 / m_wavAlign; if(fr > 2048) fr = 2048;
+            InBuff.changeMaxBlockSize((uint16_t)(fr * m_wavAlign));
+            AUDIO_INFO("WAV: %u каналів по %u біт, %u Гц — %s", nic, bps, sr, nic > 2 ? "зводжу всі канали разом" : "стерео 16 біт");
+            setBitsPerSample(16);
+            setChannels(2);
+        }else{
+            setBitsPerSample(bps);
+            setChannels(nic);
+        }
         setSampleRate(sr);
         setBitrate(nic * sr * bps);
     //    AUDIO_INFO("BitRate: %u", m_bitRate);
@@ -3146,6 +3173,10 @@ void Audio::processLocalFile() {
     }
 
     bytesCanBeWritten = InBuff.writeSpace();
+    /*  Картку читаємо великими шматками: WAV із пульта — це 3 МБ/с, а по 1,6 КБ за оберт
+        (стільки звільняє один кадр) вийшло б під дві тисячі читань на секунду.  */
+    if(bytesCanBeWritten < 32768 && InBuff.bufferFilled() > 65536) bytesCanBeWritten = 0;
+    if(bytesCanBeWritten > 32768) bytesCanBeWritten = 32768;   /* і не більше 32 КБ за раз: 200 КБ одним читанням — 27 мс без звуку */
     //----------------------------------------------------------------------------------------------------
     // some files contain further data after the audio block (e.g. pictures).
     // In that case, the end of the audio block is not the end of the file. An 'eof' has to be forced.
@@ -3265,6 +3296,7 @@ void Audio::processWebStream() {
 
     }
     availableBytes = _client->available();      // available from stream
+    if(availableBytes > yoNetAvMax) yoNetAvMax = availableBytes;
 
     // timer, triggers every second - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if((tmr_1s + 1000) < millis()) {
@@ -3349,13 +3381,19 @@ void Audio::processWebStream() {
 
     // buffer fill routine  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(true) { // statement has no effect
-        uint32_t bytesCanBeWritten = InBuff.writeSpace();
-        if(!m_f_swm)    bytesCanBeWritten = min(m_metacount,  bytesCanBeWritten);
-        if(m_f_chunked) bytesCanBeWritten = min(m_chunkcount, bytesCanBeWritten);
+        /*  Дочитуємо все, що вже прийшло (до 16 КБ за виклик), а не один шматок за оберт.
+            У https available() — лише залишок поточного запису TLS, а MFM шле запис на кожен
+            кадр (1045 Б): читали кадр — і розшифровували кадр, тож буфер потоку після будь-якої
+            заминки мережі вже не наповнювався. 26.10.2026: у буфері 1 КБ, приходило рівно
+            40 КБ/с — кожна нерівність мережі ставала провалом звуку. Межі метаданих і шматків
+            (chunked) не переступаємо: їх розбирає наступний виклик.  */
+        uint32_t got = 0;
+        for(uint8_t pass = 0; pass < 24 && got < 16384; pass++){
+            uint32_t bytesCanBeWritten = InBuff.writeSpace();
+            if(!m_f_swm)    bytesCanBeWritten = min(m_metacount,  bytesCanBeWritten);
+            if(m_f_chunked) bytesCanBeWritten = min(m_chunkcount, bytesCanBeWritten);
 
-        int16_t bytesAddedToBuffer = 0;
-
-        // Audiobuffer throttle - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+            // Audiobuffer throttle - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
             if(m_codec == CODEC_AAC || m_codec == CODEC_MP3 || m_codec == CODEC_M4A){
                 if(bytesCanBeWritten > maxFrameSize) bytesCanBeWritten = maxFrameSize;
             }
@@ -3365,19 +3403,22 @@ void Audio::processWebStream() {
             if(m_codec == CODEC_FLAC){
                 if(bytesCanBeWritten > maxFrameSize) bytesCanBeWritten = maxFrameSize;
             }
-        // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+            // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-        if(m_streamType == ST_WEBFILE){
-            // normally there is nothing to do here, if byteCounter == contentLength
-            // then the file is completely read, but:
-            // m4a files can have more data  (e.g. pictures ..) after the audio Block
-            // therefore it is bad to read anything else (this can generate noise)
-            if(byteCounter + bytesCanBeWritten >= m_contentlength) bytesCanBeWritten = m_contentlength - byteCounter;
-        }
+            if(m_streamType == ST_WEBFILE){
+                // normally there is nothing to do here, if byteCounter == contentLength
+                // then the file is completely read, but:
+                // m4a files can have more data  (e.g. pictures ..) after the audio Block
+                // therefore it is bad to read anything else (this can generate noise)
+                if(byteCounter + bytesCanBeWritten >= m_contentlength) bytesCanBeWritten = m_contentlength - byteCounter;
+            }
+            if(bytesCanBeWritten > 16384) bytesCanBeWritten = 16384;   /* OGG та ін. — без обмеження вище */
+            if(!bytesCanBeWritten) break;
+            if(pass && !_client->available()) break;      /* далі нічого не прийшло */
 
-        bytesAddedToBuffer = _client->read(InBuff.getWritePtr(), bytesCanBeWritten);
-
-        if(bytesAddedToBuffer > 0) {
+            int32_t bytesAddedToBuffer = _client->read(InBuff.getWritePtr(), bytesCanBeWritten);
+            if(bytesAddedToBuffer <= 0) break;
+            yoNetRx += bytesAddedToBuffer;
             if(m_streamType == ST_WEBFILE)             byteCounter  += bytesAddedToBuffer;  // Pull request #42
             if(!m_f_swm)                m_metacount  -= bytesAddedToBuffer;
             if(m_f_chunked)             m_chunkcount -= bytesAddedToBuffer;
@@ -3385,9 +3426,15 @@ void Audio::processWebStream() {
                 йде рівно те, що йде в декодер. Див. extras/yoRecorder.  */
             yoRecTap(InBuff.getWritePtr(), bytesAddedToBuffer);
             InBuff.bytesWritten(bytesAddedToBuffer);
+            got += bytesAddedToBuffer;
         }
 
-        if(InBuff.bufferFilled() > maxFrameSize && !f_stream) {  // waiting for buffer filled
+        /*  Стартовий запас: грати, коли в буфері ≥ 24 КБ (~1,5 с при 128 кбіт/с, ~0,6 с при
+            320), а не з першим кадром — інакше будь-яка нерівність мережі на старті давала
+            провал (26.10.2026: «провал звуку … у буфері потоку 2 КБ» одразу після вмикання).
+            Повільні потоки (24 КБ — це секунди) — не довше 2,5 с чекання; файл — одразу.  */
+        if(!f_stream && InBuff.bufferFilled() > maxFrameSize &&
+           (InBuff.bufferFilled() >= 24 * 1024 || (uint32_t)(millis() - m_t0) > 2500 || m_streamType == ST_WEBFILE)) {  // waiting for buffer filled
             f_stream = true;  // ready to play the audio data
             uint16_t filltime = millis() - m_t0;
 
@@ -3628,7 +3675,12 @@ void Audio::processWebStreamTS() {
 
     // buffer fill routine  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(true) { // statement has no effect
-        if(InBuff.bufferFilled() > maxFrameSize && !f_stream) {  // waiting for buffer filled
+        /*  Стартовий запас: грати, коли в буфері ≥ 24 КБ (~1,5 с при 128 кбіт/с, ~0,6 с при
+            320), а не з першим кадром — інакше будь-яка нерівність мережі на старті давала
+            провал (26.10.2026: «провал звуку … у буфері потоку 2 КБ» одразу після вмикання).
+            Повільні потоки (24 КБ — це секунди) — не довше 2,5 с чекання; файл — одразу.  */
+        if(!f_stream && InBuff.bufferFilled() > maxFrameSize &&
+           (InBuff.bufferFilled() >= 24 * 1024 || (uint32_t)(millis() - m_t0) > 2500 || m_streamType == ST_WEBFILE)) {  // waiting for buffer filled
             f_stream = true;  // ready to play the audio data
             uint16_t filltime = millis() - m_t0;
             if(m_f_Log) AUDIO_INFO("stream ready");
@@ -4352,6 +4404,31 @@ int Audio::findNextSync(uint8_t* data, size_t len){
      return nextSync;
 }
 //---------------------------------------------------------------------------------------------------------------------
+/*  Багатоканальний або 24/32-бітний WAV → стерео 16 біт (див. read_WAV_Header). Від кожного
+    відліку беремо старші 16 біт. 1–2 канали — як є; більше — усі канали однаково в обидва
+    вуха з множником 2/√N: некорельовані джерела (мікрофони пульта) так не переповнюють,
+    а один голосний канал не тоне; понад шкалу — обрізання.  */
+static void wavWideMix(const uint8_t* p, size_t n, uint8_t ch, uint8_t by, uint16_t align, int16_t* out){
+    const uint8_t* s0 = p + by - 2;
+    if(ch <= 2){
+        for(size_t i = 0; i < n; i++, s0 += align){
+            const int16_t l = (int16_t)(s0[0] | (s0[1] << 8));
+            const int16_t r = ch == 2 ? (int16_t)(s0[by] | (s0[by + 1] << 8)) : l;
+            out[2 * i] = l; out[2 * i + 1] = r;
+        }
+        return;
+    }
+    const int32_t kq = (int32_t)(65536.0f / sqrtf((float)ch));          /* 2/√N у Q15 */
+    for(size_t i = 0; i < n; i++, s0 += align){
+        int32_t acc = 0;
+        const uint8_t* s = s0;
+        for(uint8_t c = 0; c < ch; c++, s += by) acc += (int16_t)(s[0] | (s[1] << 8));
+        int32_t m = (int32_t)(((int64_t)acc * kq) >> 15);
+        if(m > 32767) m = 32767; else if(m < -32768) m = -32768;
+        out[2 * i] = out[2 * i + 1] = (int16_t)m;
+    }
+}
+
 int Audio::sendBytes(uint8_t* data, size_t len) {
     int bytesLeft;
     static bool f_setDecodeParamsOnce = true;
@@ -4368,7 +4445,15 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     int bytesDecoded = 0;
 
     switch(m_codec){
-        case CODEC_WAV:      memmove(m_outBuff, data , len); //copy len data in outbuff and set validsamples and bytesdecoded=len
+        case CODEC_WAV:      if(m_wavWide){
+                                 size_t n = len / m_wavAlign;
+                                 if(n > 2048) n = 2048;
+                                 wavWideMix(data, n, m_wavCh, m_wavBytes, m_wavAlign, m_outBuff);
+                                 m_validSamples = n;
+                                 bytesLeft = len - n * m_wavAlign;
+                                 break;
+                             }
+                             memmove(m_outBuff, data , len); //copy len data in outbuff and set validsamples and bytesdecoded=len
                              if(getBitsPerSample() == 16) m_validSamples = len / (2 * getChannels());
                              if(getBitsPerSample() == 8 ) m_validSamples = len / 2;
                              bytesLeft = 0; break;
@@ -4828,7 +4913,11 @@ bool Audio::setFilePos(uint32_t pos) {
     }
     m_f_playing = false;
     if(m_codec == CODEC_MP3) MP3Decoder_ClearBuffer();
-    if(m_codec == CODEC_WAV) {while((pos % 4) != 0) pos++;} // must be divisible by four
+    if(m_codec == CODEC_WAV){
+        /*  на межу кадру: у звичайному WAV — кратне 4, у багатоканальному — кадр цілком (у пульта 64 Б)  */
+        if(m_wavWide){ if(pos > m_audioDataStart) pos = m_audioDataStart + (pos - m_audioDataStart) / m_wavAlign * m_wavAlign; }
+        else while((pos % 4) != 0) pos++;
+    }
     if(m_codec == CODEC_FLAC) FLACDecoderReset();
     InBuff.resetBuffer();
     if(pos < m_audioDataStart) pos = m_audioDataStart; // issue #96
@@ -4946,32 +5035,62 @@ bool Audio::playSample(int16_t sample[2]) {
         s32 += 0x80008000;
     }
     s_ob[s_on++] = s32;
+    yoAuSamples++;
     if(s_on >= sizeof(s_ob) / sizeof(s_ob[0])) yoOutFlush(m_i2s_num);
-    /*  Налагодження (команда audiostat): чи встигає звук. Поки буфер I2S повний,
-        запис блокується, і звук іде врівень із годинником. Не встигли подати
-        відліки — годинник утік уперед, і цей відрив лишається: так рахуємо
-        провали, які на слух — «пригальмовує з хрипом».  */
+    /*  Налагодження (команда audiostat): чи встигає звук. Поки буфер I2S повний, запис
+        блокується, і відліки йдуть урівень із годинником. Провал — коли DMA спорожнів: тоді
+        годинник іде, а відліки стоять, і відставання від годинника зростає НАЗАВЖДИ. Коротку
+        затримку DMA (93 мс) покриває — виробник доганяє, і відставання вертається. Тому
+        рахуємо зсув мінімуму відставання за секунду, а не кожен стрибок: раніше 20-мс
+        затримки (консоль, екран) записувались у «провали», хоч звук не переривався.  */
     {
-        static int64_t t0 = 0, lastCall = 0, lagMin = 0, over0 = 0;
+        static int64_t t0 = 0, lastCall = 0, base = 0, winMin = 0;
         static uint64_t cnt = 0;
         static uint32_t rate0 = 0;
+        static uint16_t nWin = 0;
+        static uint8_t sub = 0;
+        /*  годинник — раз на 64 відліки: esp_timer_get_time на кожен відлік коштував ~45 мс
+            на секунду звуку (багатоканальний WAV із пульта йшов на межі)  */
+        ++cnt;
+        if(++sub & 63) goto yoAuDone;
+        {
         const int64_t now = esp_timer_get_time();
         const uint32_t rate = getSampleRate();
-        if(rate != rate0 || !t0 || now - lastCall > 300000){ rate0 = rate; t0 = now; cnt = 0; lagMin = INT64_MAX; over0 = 0; }
+        if(rate != rate0 || !t0 || now - lastCall > 300000){
+            /*  довга пауза посеред того самого потоку — теж провал (перемикання станції — ні:
+                тоді потік починається заново, і cnt малий)  */
+            if(t0 && rate == rate0 && cnt > (uint64_t)rate * 2 && yoAuLog)
+                Serial.printf("##AUDIO#\tпауза звуку %u мс\n", (unsigned)((now - lastCall) / 1000));
+            rate0 = rate; t0 = now; cnt = 0; base = INT64_MAX; winMin = INT64_MAX; nWin = 0;
+        }
         lastCall = now;
-        if((++cnt & 1023) == 0 && rate){
+        if((cnt & 1023) == 0 && rate){
             const int64_t lag = (now - t0) - (int64_t)(cnt * 1000000ULL / rate);
-            if(lag < lagMin) lagMin = lag;
-            const int64_t over = lag - lagMin;
-            if(cnt > (uint64_t)rate * 2 && over - over0 > 15000){
-                yoAuUnderN++; yoAuUnderMs += (uint32_t)((over - over0) / 1000);
-                if(yoAuLog) Serial.printf("##AUDIO#\tпровал звуку %u мс, у буфері потоку %u КБ\n", (unsigned)((over - over0) / 1000), (unsigned)(inBufferFilled() / 1024));
+            if(lag < winMin) winMin = lag;
+            if(++nWin >= 43){                                  /* ~1 с */
+                if(cnt > (uint64_t)rate * 2){
+                    if(base == INT64_MAX || winMin < base) base = winMin;
+                    else if(winMin - base > 8000){
+                        const uint32_t ms = (uint32_t)((winMin - base) / 1000);
+                        yoAuUnderN++; yoAuUnderMs += ms;
+                        if(yoAuLog){
+                            extern char yoLongWhat[40]; extern uint32_t yoLongMs, yoLongAt;
+                            Serial.printf("##AUDIO#\tпровал звуку %u мс, у буфері потоку %u КБ; останній довгий крок: %s %u мс, %u мс тому\n",
+                                          (unsigned)ms, (unsigned)(inBufferFilled() / 1024),
+                                          yoLongWhat[0] ? yoLongWhat : "-", (unsigned)yoLongMs, (unsigned)(millis() - yoLongAt));
+                        }
+                        base = winMin;
+                    }
+                    else base += (winMin - base) / 8;   /* повільний дрейф годинника I2S відносно таймера — не провал */
+                }
+                winMin = INT64_MAX; nWin = 0;
             }
-            if(over > over0) over0 = over;
             const uint32_t fill = inBufferFilled();
             if(fill < yoAuMinFill) yoAuMinFill = fill;
         }
+        }
     }
+yoAuDone:
     return true;
 }
 //---------------------------------------------------------------------------------------------------------------------

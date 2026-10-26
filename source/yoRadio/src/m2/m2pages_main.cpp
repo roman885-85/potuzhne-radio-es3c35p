@@ -521,9 +521,7 @@ class TzPage : public HalfHourPage {
       if(id != 100){ ListPage::value(id, v); return; }
       int8_t h = (int8_t)(v / 4) - 12, m = (int8_t)((v % 4) * 15);
       config.setTimezone(h, m);
-      if(strlen(config.store.sntp1) > 0)
-        configTime(h * 3600 + m * 60, config.getTimezoneOffset(), config.store.sntp1,
-                   strlen(config.store.sntp2) > 0 ? config.store.sntp2 : nullptr);
+      config.setTimeConf();             /* пояс і літній час — у годинник, SNTP — заново */
       timekeeper.forceTimeSync = true;
     }
   private:
@@ -531,8 +529,18 @@ class TzPage : public HalfHourPage {
     static const char* tzLabel(uint8_t c, int16_t v){ static char b[6]; if(c) snprintf(b, sizeof(b), "%02d", v * 15); else snprintf(b, sizeof(b), "%+d", v - 12); return b; }
 };
 static const char* vNow(){ static char b[24]; strftime(b, sizeof(b), "%H:%M:%S", &network.timeinfo); return b; }
-static Item s_tzItems[] = { iGap(136), iInfo("Зараз", vNow), iNote([](){ return "години від Гринвіча (Київ: +2 взимку, +3 влітку)"; }, 24) };
-static TzPage s_tz(s_tzItems, 3);
+/*  Літній час (26.10.2026): пояс на барабані — зимовий, а влітку годинник сам додає годину.  */
+static const char* vTzNote(){
+  if(extras.s.dstMode != 1) return "години від Гринвіча (Київ: +2 взимку, +3 влітку)";
+  time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt);
+  return t > 1600000000 && lt.tm_isdst > 0 ? "пояс зимовий (Київ +2); зараз літній, +1 година"
+                                           : "пояс зимовий (Київ +2); улітку додасться година";
+}
+static Item s_tzItems[] = { iGap(136), iInfo("Зараз", vNow),
+  iSwitch("Літній час — сам", IC_SUN, C_ORANGE, [](){ return (int32_t)(extras.s.dstMode == 1); },
+          [](int32_t v){ extras.s.dstMode = v ? 1 : 0; extras.changed(); config.applyTz(); }),
+  iNote(vTzNote, 24) };
+static TzPage s_tz(s_tzItems, 4);
 Page& pgTz = s_tz;
 
 /*  =================== «Обране» =================== */
