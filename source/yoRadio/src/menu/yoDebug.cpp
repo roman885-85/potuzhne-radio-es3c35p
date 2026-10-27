@@ -1,5 +1,6 @@
 #include "yoDebug.h"
 #ifdef YO_DEBUG
+volatile bool yoVolTrace = false;   /* voltrace: кроки анімації повзунка гучності (m2player.cpp) */
 
 #include "../core/config.h"
 #include "../core/commandhandler.h"
@@ -241,6 +242,83 @@ void yodbgLoop(){
     else if(!strncmp(buf,"shadow ",7)){ lcdShadow(atoi(buf + 7) != 0); Serial.printf("SHADOW %d\n", lcdShadowOn() ? 1 : 0); }
 #endif
     else if(!strcmp(buf,"scrtest"))   yodbgReadTest();
+    else if(!strncmp(buf,"logobanner",10)){
+      /*  Логотипи-банери серед уже знайдених: широка картинка, вписана по ширині, — однакові смуги
+          згори й знизу, а з боків картинка торкається країв. «logobanner del» — стерти такі файли,
+          щоб прохід логотипів («Завантажити всі логотипи») пошукав заново (з новою перевіркою банерів).  */
+      const bool del = strstr(buf + 10, "del") != nullptr;
+      File pl = SPIFFS.open(PLAYLIST_PATH, "r");
+      uint16_t* px = (uint16_t*)heap_caps_malloc(LOGO_S * LOGO_S * 2, MALLOC_CAP_SPIRAM);
+      uint16_t found = 0, n = 0;
+      if(pl && px){
+        char line[300];
+        while(pl.available()){
+          const size_t l = pl.readBytesUntil('\n', line, sizeof(line) - 1); line[l] = 0; n++;
+          char* t1 = strchr(line, '\t'); if(!t1) continue; *t1 = 0;
+          char* url = t1 + 1; char* t2 = strchr(url, '\t'); if(t2) *t2 = 0;
+          char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)YoLogos::crc(url));
+          File f = SPIFFS.open(path, "r");
+          if(!f) continue;
+          const bool ok = f.read((uint8_t*)px, LOGO_S * LOGO_S * 2) == LOGO_S * LOGO_S * 2; f.close();
+          if(!ok) continue;
+          auto near = [](uint16_t a, uint16_t b){ return abs((a >> 11) - (b >> 11)) <= 2 && abs(((a >> 5) & 63) - ((b >> 5) & 63)) <= 4 && abs((a & 31) - (b & 31)) <= 2; };
+          const uint16_t c = px[0];
+          auto rowU = [&](int y){ for(int x = 0; x < LOGO_S; x++) if(!near(px[y * LOGO_S + x], c)) return false; return true; };
+          auto colU = [&](int x){ for(int y = 0; y < LOGO_S; y++) if(!near(px[y * LOGO_S + x], c)) return false; return true; };
+          int t = 0, b = 0, lft = 0, rgt = 0;
+          while(t < LOGO_S && rowU(t)) t++;
+          while(b < LOGO_S && rowU(LOGO_S - 1 - b)) b++;
+          while(lft < LOGO_S && colU(lft)) lft++;
+          while(rgt < LOGO_S && colU(LOGO_S - 1 - rgt)) rgt++;
+          if(t >= LOGO_S / 8 && b >= LOGO_S / 8 && lft <= 1 && rgt <= 1 && t < LOGO_S){
+            found++;
+            Serial.printf("LOGOBANNER %u «%s» смуги %d/%d, боки %d/%d %s\n", (unsigned)n, line, t, b, lft, rgt, del ? "— стерто" : "");
+            if(del) SPIFFS.remove(path);
+          }
+        }
+      }
+      if(pl) pl.close();
+      if(px) heap_caps_free(px);
+      Serial.printf("LOGOBANNER станцій %u, банерів %u%s\n", (unsigned)n, (unsigned)found, del && found ? " — запустіть «logoall»" : "");
+    }
+    else if(!strncmp(buf,"logoqual",8)){
+      /*  Чи прочитається кожен збережений логотип: розмір самого знака в клітинці (так само
+          перевіряє пошук). «logoqual del» — стерти ті, що не прочитати (далі «logoall»).  */
+      const bool del = strstr(buf + 8, "del") != nullptr;
+      File pl = SPIFFS.open(PLAYLIST_PATH, "r");
+      uint16_t* px = (uint16_t*)heap_caps_malloc(LOGO_S * LOGO_S * 2, MALLOC_CAP_SPIRAM);
+      uint16_t bad = 0, have = 0, n = 0;
+      if(pl && px){
+        char line[300];
+        while(pl.available()){
+          const size_t l = pl.readBytesUntil('\n', line, sizeof(line) - 1); line[l] = 0; n++;
+          char* t1 = strchr(line, '\t'); if(!t1) continue; *t1 = 0;
+          char* url = t1 + 1; char* t2 = strchr(url, '\t'); if(t2) *t2 = 0;
+          char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)YoLogos::crc(url));
+          File f = SPIFFS.open(path, "r");
+          if(!f){ Serial.printf("LOGOQUAL %u «%s» —%s\n", (unsigned)n, line, logos.isNo(YoLogos::crc(url)) ? " нема (позначка)" : " ще не шукали"); continue; }
+          const bool ok = f.read((uint8_t*)px, LOGO_S * LOGO_S * 2) == LOGO_S * LOGO_S * 2; f.close();
+          if(!ok) continue;
+          have++;
+          int bw, bh; yoLogoContent(px, bw, bh);
+          const bool rd = yoLogoReadable(bw, bh);
+          if(!rd){ bad++; if(del) SPIFFS.remove(path); }
+          Serial.printf("LOGOQUAL %u «%s» знак %d×%d%s\n", (unsigned)n, line, bw, bh, rd ? "" : del ? " — НЕ ПРОЧИТАТИ, стерто" : " — НЕ ПРОЧИТАТИ");
+        }
+      }
+      if(pl) pl.close();
+      if(px) heap_caps_free(px);
+      if(del && bad) logos.bump();
+      Serial.printf("LOGOQUAL станцій %u, логотипів %u, не прочитати %u\n", (unsigned)n, (unsigned)have, (unsigned)bad);
+    }
+    else if(!strcmp(buf,"netcon"))    yoNetConInfo(Serial);     /* консоль по Wi-Fi: стан, клієнт, скільки надіслано */
+    else if(!strncmp(buf,"netfreeze ",10)){
+      /*  З'єднання станції «завмирає» (дані не беруться) на N с або до нового з'єднання —
+          перевірка, як швидко радіо помічає мертвий потік і з'єднується наново.  */
+      extern volatile uint32_t yoNetFreezeUntil; yoNetFreezeUntil = millis() + (uint32_t)atoi(buf + 10) * 1000UL;
+      Serial.printf("NETFREEZE %d с\n", atoi(buf + 10));
+    }
+    else if(!strcmp(buf,"logowipe"))  { logos.wipeAll(); Serial.println("LOGOWIPE: усі логотипи — наново (у задачі проходу)"); }
     else if(!strcmp(buf,"logoall"))   { logos.fetchAllForce(); Serial.printf("LOGOALL станцій %u\n", (unsigned)logos.batchTotal()); }
     else if(!strncmp(buf,"logotest ",9)){ if(!logos.test(buf + 9)) Serial.println("LOGOTEST: зайнято або немає мережі"); }
     else if(!strncmp(buf,"pinact ",7)){
@@ -341,6 +419,25 @@ void yodbgLoop(){
                         (unsigned)(tot / 1024), (unsigned)(us / 1000), us ? (double)tot / (double)us : 0.0);
         }
       }
+    }
+    else if(!strncmp(buf,"volanim ",8)){
+      /*  Повзунок гучності «з'їжджає» з показаної позиції N до справжньої гучності — сама гучність
+          не міняється. Разом із voltrace видно кожен крок руху.  */
+      m2::P.volAnimFrom((float)atoi(buf + 8)); Serial.printf("VOLANIM з %d до %u\n", atoi(buf + 8), (unsigned)config.store.volume);
+    }
+    else if(!strcmp(buf,"clk")){
+      /*  Найбільший стрибок між сусідніми відліками на виході з минулого виклику (і скинути).
+          Порівнювати: «clk» → секунда музики → «clk» (тло) → перемотка → «clk» (перехід).  */
+      extern volatile uint32_t yoClickMax; Serial.printf("CLK найбільший стрибок %u\n", (unsigned)yoClickMax); yoClickMax = 0;
+    }
+    else if(!strncmp(buf,"seekfade ",9)){
+      extern volatile bool yoSeekFade; yoSeekFade = atoi(buf + 9) != 0;
+      Serial.printf("SEEKFADE %s\n", yoSeekFade ? "з затиханням" : "без затихання (як було)");
+    }
+    else if(!strcmp(buf,"voltrace")){
+      /*  Друкувати кожен крок анімації повзунка гучності (VOLANIM) — перевірити, що він їде, а не стрибає.  */
+      extern volatile bool yoVolTrace; yoVolTrace = !yoVolTrace;
+      Serial.printf("VOLTRACE %s\n", yoVolTrace ? "увімкнено" : "вимкнено");
     }
     else if(!strcmp(buf,"tz")){
       /*  Пояс і літній час: що в TZ, котра година за UTC і місцева, чи діє літній час.  */
@@ -692,6 +789,28 @@ void yodbgLoop(){
       delay(300);
       ESP.restart();
     }
+    else if(!strncmp(buf,"wstatic ",8)){
+      /*  wstatic <адреса> <шлюз> — підключитись до першої збереженої мережі без DHCP (адреса
+          вручну, маска /24, DNS = шлюз): перевірка, чи не в DHCP мережі річ, коли радіо
+          з'єднується з точкою, а адреси не дістає. Після перезапуску — знову DHCP.  */
+      char a[20] = {0}, g[20] = {0};
+      IPAddress ip, gw;
+      if(sscanf(buf + 8, "%19s %19s", a, g) == 2 && ip.fromString(a) && gw.fromString(g) && config.ssidsCount){
+        WiFi.config(ip, gw, IPAddress(255, 255, 255, 0), gw);
+        network.connectTo(config.ssids[0].ssid, config.ssids[0].password);
+        Serial.printf("WSTATIC %s через %s до «%s»\n", a, g, config.ssids[0].ssid);
+      }else Serial.println("WSTATIC: wstatic <адреса> <шлюз>");
+    }
+    else if(!strcmp(buf,"wdhcp")){
+      /*  Підключитись до першої збереженої мережі з DHCP і чекати адресу без обмеження
+          (спробу тримаємо — коло повторів її не перебиває): скільки насправді відповідає DHCP.  */
+      if(config.ssidsCount){
+        WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+        network.tryHeld = true;
+        network.connectTo(config.ssids[0].ssid, config.ssids[0].password);
+        Serial.printf("WDHCP %lu мс: чекаю адресу від DHCP\n", (unsigned long)millis());
+      }
+    }
     else if(!strcmp(buf,"wtry")){
       Serial.printf("WTRY стан=%d status()=%d ssid='%s' ip=%s\n", (int)network.tryState(), (int)WiFi.status(), WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     }
@@ -864,6 +983,19 @@ void yodbgLoop(){
       Serial.printf("SPIHZ просили %u МГц, насправді %u.%u МГц (дільник %u×%u)\n",
                     (unsigned)(spidmaHz / 1000000UL), (unsigned)(real / 1000000UL),
                     (unsigned)((real % 1000000UL) / 100000UL), (unsigned)pre, (unsigned)n);
+    }
+    else if(!strcmp(buf,"p2perf")){
+      /*  Головний екран: кадри, смуги, пікселі й час етапів (тло, малювання, у кадр, вивід на панель).  */
+      using namespace m2;
+      static uint32_t t0 = 0; const uint32_t now = millis(), dt = now - t0; t0 = now;
+      const uint32_t f = p2Frames ? p2Frames : 1;
+      Serial.printf("P2PERF за %u мс: кадрів %u, смуг %u, пікселів %u на кадр; на кадр: тло %u мкс, малювання %u мкс, у кадр %u мкс, на панель %u мкс; найдовший кадр %u мкс\n",
+                    (unsigned)dt, (unsigned)p2Frames, (unsigned)p2Strips, (unsigned)(p2Px / f), (unsigned)(p2BgUs / f), (unsigned)(p2DrawUs / f),
+                    (unsigned)(p2PushUs / f), (unsigned)(p2EndUs / f), (unsigned)p2MaxUs);
+      Serial.printf("P2PERF викликів render %u (%u/с), підготовка %u мкс на виклик, спектр разом %u мс, найбільший проміжок між викликами %u мс\n",
+                    (unsigned)p2Calls, (unsigned)(dt ? p2Calls * 1000 / dt : 0), (unsigned)(p2Calls ? p2PreUs / p2Calls : 0), (unsigned)(p2SpecUs / 1000), (unsigned)(p2LoopGap / 1000));
+      p2Frames = p2Strips = p2Px = p2BgUs = p2DrawUs = p2PushUs = p2EndUs = p2MaxUs = 0;
+      p2Calls = p2PreUs = p2SpecUs = p2LoopGap = 0;
     }
     else if(!strcmp(buf,"m2perf")){
       /*  нове меню: скільки кадрів і куди йде час (з минулого виклику)  */

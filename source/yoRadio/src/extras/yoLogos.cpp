@@ -5,6 +5,7 @@
 #include <SPIFFS.h>
 #include "miniz.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "yoSermons.h"          /* yoJpegFit */
 #include "../core/options.h"
 #include "../core/config.h"      /* PLAYLIST_PATH */
@@ -14,6 +15,10 @@ YoLogos logos;
 
 /*  Список «нема логотипа» (див. noLoad нижче): у PSRAM і одним файлом.  */
 #define LG_NOLIST "/logo/no.lst"
+/*  Правила відбору логотипів. 2 (27.10.2026) — перевірка, чи знак прочитається в клітинці,
+    темна підкладка під світлий знак, домашня сторінка з каталогу. Список зі старшими
+    правилами — один раз переглянути збережене (logoReview).  */
+#define LG_RULES  2
 static uint32_t* s_no = nullptr;
 static uint16_t  s_noN = 0, s_noCap = 0;
 static volatile bool s_noLoaded = false;
@@ -145,6 +150,46 @@ static bool pngDecode(const uint8_t* d, size_t n, uint8_t** outRGBA, uint32_t* W
   return true;
 }
 
+/*  Якість межі на банері (останній розбір): частка площі й видовженість знайденої межі.
+    Логотип на банері — пляма посередині; якщо «логотип» займає майже весь банер чи лишився
+    смугою — це не логотип, а картинка-заставка (Radio Jazz, Авторадіо: у списку станцій
+    виходив темний прямокутник із крихітним знаком).  */
+volatile float yoBoxCover = 0, yoBoxAspect = 0;
+static void boxQuality(uint32_t w, uint32_t h, uint32_t cw, uint32_t ch){
+  yoBoxCover = (w && h) ? (float)cw * ch / ((float)w * h) : 1.0f;
+  yoBoxAspect = (cw && ch) ? (cw > ch ? (float)cw / ch : (float)ch / cw) : 99.0f;
+}
+
+/*  Підкладка під прозоре. Біла — як було; але світлий знак на прозорому тлі (білий
+    логотип «Наше Радіо» 300×110) на білому зникав: у списку стояв порожній білий
+    квадрат. Такий кладемо на темну підкладку, близьку до тла списку.  */
+#define LG_DARK_R 40
+#define LG_DARK_G 52
+#define LG_DARK_B 66
+struct LgAlpha {
+  uint32_t n = 0, tr = 0, op = 0, lum = 0;
+  void add(int r, int g, int b, int a){ n++; if(a < 128) tr++; else{ op++; lum += (uint32_t)(r * 299 + g * 587 + b * 114) / 1000; } }
+  bool dark() const { return op && tr * 10 >= n && lum / op >= 200; }   /* ≥ 10 % прозорого, решта — світла */
+};
+
+/*  Розмір самого знака в готовій клітинці LOGO_S×LOGO_S: усе, що помітно відрізняється
+    від кутової точки. Напис «Громадське радіо» 250×44 дає в клітинці 45×7 точок — не
+    прочитати; білий знак «Наше Радіо» на темній підкладці — 13×12. Поріг нижчий, ніж
+    у межах банера (150), щоб блідий знак не вважався порожнім.  */
+void yoLogoContent(const uint16_t* px, int& bw, int& bh){
+  auto rgb = [](uint16_t c, int& r, int& g, int& b){ r = (c >> 11) * 255 / 31; g = ((c >> 5) & 63) * 255 / 63; b = (c & 31) * 255 / 31; };
+  int br, bg, bb; rgb(px[0], br, bg, bb);
+  int x0 = LOGO_S, y0 = LOGO_S, x1 = -1, y1 = -1;
+  for(int y = 0; y < LOGO_S; y++)
+    for(int x = 0; x < LOGO_S; x++){
+      int r, g, b; rgb(px[y * LOGO_S + x], r, g, b);
+      if(abs(r - br) + abs(g - bg) + abs(b - bb) > 80){ if(x < x0) x0 = x; if(x > x1) x1 = x; if(y < y0) y0 = y; if(y > y1) y1 = y; }
+    }
+  bw = x1 < 0 ? 0 : x1 - x0 + 1; bh = y1 < 0 ? 0 : y1 - y0 + 1;
+}
+/*  Чи прочитається: не нижче 10 точок і не менше 24 у довжину.  */
+bool yoLogoReadable(int bw, int bh){ return (bw < bh ? bw : bh) >= 10 && (bw > bh ? bw : bh) >= 24; }
+
 /*  ---------- межі логотипа на банері ----------
     Фон — колір кутової точки (прозоре — на білому); логотип — усе, що від нього
     помітно відрізняється. Повертає прямокутник з полем ~6 %; нічого — уся картинка.  */
@@ -163,11 +208,12 @@ void yoContentBox(const uint8_t* px, uint32_t w, uint32_t h, uint8_t chans, uint
       /*  150: білий логотип на темному банері (~600) — так, градієнт фону (< 90) — ні  */
       if(abs(r - br) + abs(g - bg) + abs(b - bb) > 150){ if(x < x0) x0 = x; if(x > x1) x1 = x; if(y < y0) y0 = y; if(y > y1) y1 = y; }
     }
-  if(x1 < x0 || y1 < y0){ cx0 = cy0 = 0; cw = w; ch = h; return; }
+  if(x1 < x0 || y1 < y0){ cx0 = cy0 = 0; cw = w; ch = h; boxQuality(w, h, cw, ch); return; }
   const uint32_t pad = ((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0)) * 6 / 100 + 1;
   cx0 = x0 > pad ? x0 - pad : 0; cy0 = y0 > pad ? y0 - pad : 0;
   const uint32_t ex = x1 + pad + 1 < w ? x1 + pad + 1 : w, ey = y1 + pad + 1 < h ? y1 + pad + 1 : h;
   cw = ex - cx0; ch = ey - cy0;
+  boxQuality(w, h, cw, ch);
 }
 
 /*  ---------- великий PNG: потоком, одразу у W×H ----------
@@ -274,7 +320,8 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, f
   if(!pi || !pngHead(d, n, *pi)){ if(pi) free(pi); return false; }
   const uint32_t w = pi->w, h = pi->h;
   uint32_t cx0, cy0, cw, chh;
-  uint16_t fill = 0xFFFF;                         /* поля навколо вписаного — білі (прозоре теж на білому) */
+  uint16_t fill = 0xFFFF;                         /* поля навколо вписаного — білі (чи темні — під світлий знак) */
+  const bool banner = crop < 0;
   if(crop < 0){
     /*  межі логотипа: перший прохід — лише порівняння з кольором кутової точки  */
     int br = -1, bg = 0, bb = 0;
@@ -293,14 +340,18 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, f
       cx0 = x0 > pad ? x0 - pad : 0; cy0 = y0 > pad ? y0 - pad : 0;
       cw = (x1 + pad + 1 < w ? x1 + pad + 1 : w) - cx0; chh = (y1 + pad + 1 < h ? y1 + pad + 1 : h) - cy0;
     }else{ cx0 = cy0 = 0; cw = w; chh = h; }
+    boxQuality(w, h, cw, chh);
   }else cropRect(w, h, crop, cx0, cy0, cw, chh);
   /*  область джерела і куди вона лягає в W×H (з полями, як fitRGBA)  */
   const float f = fminf((float)W / cw, (float)H / chh);
   int dw = (int)(cw * f), dh = (int)(chh * f); if(dw < 1) dw = 1; if(dh < 1) dh = 1;
   const int ox = (W - dw) / 2, oy = (H - dh) / 2;
-  uint32_t* acc = (uint32_t*)heap_caps_calloc((size_t)dw * dh * 4, 4, MALLOC_CAP_SPIRAM);
+  /*  на точку: сума кольору, помноженого на непрозорість, сума непрозорості, кількість —
+      підкладку під прозоре вибираємо, коли вже видно всю картинку  */
+  uint32_t* acc = (uint32_t*)heap_caps_calloc((size_t)dw * dh * 5, 4, MALLOC_CAP_SPIRAM);
   uint16_t* xmap = (uint16_t*)ps_malloc((size_t)w * 2);
   bool ok = false;
+  LgAlpha st;
   if(acc && xmap){
     for(uint32_t x = 0; x < w; x++) xmap[x] = (x < cx0 || x >= cx0 + cw) ? 0xFFFF : (uint16_t)((uint64_t)(x - cx0) * dw / cw);
     ok = pngRows(d, n, *pi, [&](uint32_t y, const uint8_t* row){
@@ -309,20 +360,26 @@ static bool pngFitBig(const uint8_t* d, size_t n, uint16_t* out, int W, int H, f
       for(uint32_t x = 0; x < w; x++){
         if(xmap[x] == 0xFFFF) continue;
         const uint8_t* q = row + x * 4; const uint32_t al = q[3];
-        uint32_t* a4 = acc + ((size_t)py * dw + xmap[x]) * 4;
-        if(al == 255){ a4[0] += q[0]; a4[1] += q[1]; a4[2] += q[2]; }
-        else{ a4[0] += (q[0] * al + 255 * (255 - al)) / 255; a4[1] += (q[1] * al + 255 * (255 - al)) / 255; a4[2] += (q[2] * al + 255 * (255 - al)) / 255; }
-        a4[3]++;
+        uint32_t* a5 = acc + ((size_t)py * dw + xmap[x]) * 5;
+        a5[0] += q[0] * al; a5[1] += q[1] * al; a5[2] += q[2] * al; a5[3] += al; a5[4]++;
+        st.add(q[0], q[1], q[2], al);
       }
     });
     if(ok){
+      const bool dk = st.dark();
+      const uint32_t mr = dk ? LG_DARK_R : 255, mg = dk ? LG_DARK_G : 255, mb = dk ? LG_DARK_B : 255;
+      if(dk && !banner) fill = (uint16_t)(((mr & 0xF8) << 8) | ((mg & 0xFC) << 3) | (mb >> 3));
       for(int yy = 0; yy < H; yy++)
         for(int xx = 0; xx < W; xx++){
           uint16_t pxl = fill;
           const int sx = xx - ox, sy = yy - oy;
           if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
-            const uint32_t* a4 = acc + ((size_t)sy * dw + sx) * 4;
-            if(a4[3]){ uint32_t r = a4[0] / a4[3], g = a4[1] / a4[3], b = a4[2] / a4[3]; pxl = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
+            const uint32_t* a5 = acc + ((size_t)sy * dw + sx) * 5;
+            if(a5[4]){
+              const uint32_t k = a5[4] * 255, rest = k - a5[3];
+              const uint32_t r = (a5[0] + mr * rest) / k, g = (a5[1] + mg * rest) / k, b = (a5[2] + mb * rest) / k;
+              pxl = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+            }
           }
           out[yy * W + xx] = pxl;
         }
@@ -403,12 +460,18 @@ static void cropRect(uint32_t sw, uint32_t sh, float crop, uint32_t& cx0, uint32
   if(!cw) cw = 1; if(!ch) ch = 1;
 }
 
-/*  RGBA -> W x H RGB565, прозоре на білому, з усередненням пікселів.  */
+/*  RGBA -> W x H RGB565, прозоре на білому (світлий знак — на темному), з усередненням пікселів.  */
 static void fitRGBA(const uint8_t* rgba, uint32_t sw0, uint32_t sh0, uint16_t* out, int W, int H, float crop = 0){
   uint32_t cx0, cy0, sw, sh;
   uint16_t fill = 0xFFFF;
   if(crop < 0) yoContentBox(rgba, sw0, sh0, 4, cx0, cy0, sw, sh, &fill);   /* банер — лише сам логотип, поля — його фоном */
   else cropRect(sw0, sh0, crop, cx0, cy0, sw, sh);
+  LgAlpha st;
+  for(uint32_t y = cy0; y < cy0 + sh; y++)
+    for(uint32_t x = cx0; x < cx0 + sw; x++){ const uint8_t* p = rgba + ((size_t)y * sw0 + x) * 4; st.add(p[0], p[1], p[2], p[3]); }
+  const bool dk = st.dark();
+  const uint32_t mr = dk ? LG_DARK_R : 255, mg = dk ? LG_DARK_G : 255, mb = dk ? LG_DARK_B : 255;
+  if(dk && crop >= 0) fill = (uint16_t)(((mr & 0xF8) << 8) | ((mg & 0xFC) << 3) | (mb >> 3));
   float f = fminf((float)W / sw, (float)H / sh);
   int dw = (int)(sw * f), dh = (int)(sh * f);
   if(dw < 1) dw = 1; if(dh < 1) dh = 1;
@@ -420,14 +483,15 @@ static void fitRGBA(const uint8_t* rgba, uint32_t sw0, uint32_t sh0, uint16_t* o
       if(sx >= 0 && sy >= 0 && sx < dw && sy < dh){
         int x0 = sx * sw / dw, x1 = (sx + 1) * sw / dw; if(x1 <= x0) x1 = x0 + 1;
         int y0 = sy * sh / dh, y1 = (sy + 1) * sh / dh; if(y1 <= y0) y1 = y0 + 1;
-        uint32_t R = 0, G = 0, B = 0, k = 0;
+        uint32_t R = 0, G = 0, B = 0, A = 0, k = 0;
         for(int yy = y0; yy < y1; yy++)
           for(int xx = x0; xx < x1; xx++){
             const uint8_t* p = rgba + ((size_t)(yy + cy0) * sw0 + xx + cx0) * 4;
-            uint32_t a = p[3];
-            R += (p[0] * a + 255 * (255 - a)) / 255; G += (p[1] * a + 255 * (255 - a)) / 255; B += (p[2] * a + 255 * (255 - a)) / 255; k++;
+            const uint32_t a = p[3];
+            R += p[0] * a; G += p[1] * a; B += p[2] * a; A += a; k++;
           }
-        r = R / k; g = G / k; b = B / k;
+        const uint32_t kk = k * 255, rest = kk - A;
+        r = (R + mr * rest) / kk; g = (G + mg * rest) / kk; b = (B + mb * rest) / kk;
       }
       out[y * W + x] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
     }
@@ -467,10 +531,37 @@ static void urlEnc(const char* s, char* o, size_t cap){
 }
 
 static uint16_t s_tries = 0;                 /* скільки повторів знадобилось у цьому пошуку */
+/*  Найменше вільної внутрішньої пам'яті під час останнього запиту з TLS (mbedTLS тут бере
+    лише внутрішню: CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC) — поруч із TLS самої станції.  */
+static volatile uint32_t s_tlsMin = UINT32_MAX;
 
 /*  Одна спроба GET у буфер PSRAM. Довжина; 0 — сервер відповів «нема» (4xx);
-    -1 — мережа або сервер тимчасово не впорався (5xx, 429) — варто повторити.  */
-static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap){
+    -1 — мережа або сервер тимчасово не впорався (5xx, 429) — варто повторити.
+    whole — потрібен увесь файл (картинка): більший за буфер одразу 0. Обрізаний PNG
+    не розпакується, а спроба йшла секунди: «Люкс FM Золоті хіти» — 5,5 МБ, качалось
+    1,5 МБ і ще 12 с розпаковувалось до помилки.  */
+/*  Пам'ять. Мережа (TLS, буфери TCP і Wi-Fi) бере лише внутрішню. Прохід логотипів поруч зі
+    станцією по https і веб-сторінкою опускав її мінімум до 4,5 КБ (27.10.2026) — на краю, де вже
+    не зможе з'єднатись сама станція чи впаде веб-сервер. Тож пошук логотипа поступається:
+    перед запитом чекає, доки вільно ≥ LG_MEMSTART, а посеред завантаження, коли лишилось
+    < LG_MEMLOW, кидає його (як мережевий збій — спробуємо згодом).  */
+#define LG_MEMSTART (26 * 1024)
+#define LG_MEMLOW   (10 * 1024)
+
+extern volatile uint32_t yoWebHeavyAt;          /* extras/yoWebApi.cpp */
+/*  Веб-сторінка саме вантажиться (файли, логотипи): тоді пошук не починаємо, а прохід «усі
+    логотипи» між станціями завершує задачу (16 КБ її стека — внутрішня пам'ять) і продовжує
+    згодом. З проходом, що лише чекав, мінімум однаково опускався до 8,8 КБ.  */
+static bool webBusy(){ const uint32_t t = yoWebHeavyAt; return t && millis() - t < 4000; }
+
+static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap, bool whole){
+  /*  сторінка почала вантажитись посеред пошуку — почекати, до 20 с  */
+  for(uint8_t w = 0; w < 100 && webBusy(); w++) vTaskDelay(pdMS_TO_TICKS(200));
+  for(uint8_t w = 0; w < 50 && heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < LG_MEMSTART; w++) vTaskDelay(pdMS_TO_TICKS(200));
+  if(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < LG_MEMSTART){
+    Serial.printf("##LOGO#\tмало пам'яті (%u Б) — запит відкладено\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    return -1;
+  }
   /*  Переадресації — самі: HTTPClient лишається на тому ж типі з'єднання, і з
       http:// на https:// (301 radiomaria.org.ua, sw-radio.com) не переходив —
       логотип вважався «нема».  */
@@ -478,8 +569,16 @@ static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap){
   strlcpy(url, url0, sizeof(url));
   for(uint8_t hop = 0; hop < 5; hop++){
     const bool tls = !strncmp(url, "https", 5);
+    if(tls) heap_caps_monitor_local_minimum_free_size_start();
+    struct TlsMin { bool on; ~TlsMin(){ if(on){ const uint32_t lm = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+                                                    heap_caps_monitor_local_minimum_free_size_stop(); if(lm < s_tlsMin) s_tlsMin = lm; } } } tm{tls};
     WiFiClient plain; WiFiClientSecure sec; sec.setInsecure();
     HTTPClient http;
+    /*  HTTP/1.0: інакше сервер може віддати відповідь частинами (chunked), а потік з
+        getStreamPtr() — сирий, із заголовками частин усередині. Значок hromadske.radio
+        починався з «51b7\r\n» замість PNG і не розпаковувався; так само міг рватися
+        JSON каталогу чи сторінка сайту.  */
+    http.useHTTP10(true);
     http.setTimeout(6000); http.setConnectTimeout(6000);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setUserAgent("PotuzhneRadio/1.0");
@@ -511,15 +610,24 @@ static int httpGetOnce(const char* url0, uint8_t* buf, size_t cap){
     if(code != 200){ http.end(); return (code > 0 && code < 500 && code != 429) ? 0 : -1; }
     WiFiClient* st = http.getStreamPtr();
     int total = http.getSize();
+    if(whole && total > (int)cap){
+      Serial.printf("##LOGO#\tзавеликий файл (%d КБ) — пропускаю\n", total / 1024);
+      http.end(); return 0;
+    }
     size_t len = 0;
     /*  великий значок — довше: 10 с + секунда на кожні 20 КБ (PNG 1 МБ через TLS іде ~30–50 с)  */
     uint32_t deadline = millis() + 10000 + (total > 0 ? (uint32_t)total / 20 : 0);
     while(len < cap && (int32_t)(deadline - millis()) > 0 && (total < 0 || (int)len < total)){
+      if(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < LG_MEMLOW){
+        Serial.printf("##LOGO#\tмало пам'яті (%u Б) — завантаження перервано\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        http.end(); return -1;
+      }
       int av = st->available();
       if(!av){ if(!st->connected()) break; vTaskDelay(pdMS_TO_TICKS(5)); continue; }
       len += st->read(buf + len, (size_t)av > cap - len ? cap - len : av);
     }
     http.end();
+    if(whole && total < 0 && len >= cap) return 0;  /* розмір не сказали, а буфер уже повний — обрізаний */
     return (int)len;
   }
   return 0;                                        /* забагато переадресацій */
@@ -535,11 +643,11 @@ bool YoLogos::netBusy() const { return s_inNet; }
 /*  tries: 6 — для каталогу (його сервер рве ~70 % з'єднань), 2 — для значків на інших
     сайтах: невдалі спроби до мертвого сервера йдуть під час гри, і кожна заважала
     потоку (26.10.2026: провали звуку саме на «Радіо Промінь: мережа … (повторів 5)»).  */
-static int httpGet(const char* url, uint8_t* buf, size_t cap, uint8_t tries = 6){
+static int httpGet(const char* url, uint8_t* buf, size_t cap, uint8_t tries = 6, bool whole = false){
   struct NetMark { NetMark(){ s_inNet = true; } ~NetMark(){ s_inNet = false; } } mark;
   for(uint8_t a = 0; a < tries; a++){
     if(a){ s_tries++; vTaskDelay(pdMS_TO_TICKS(1500)); }
-    int n = httpGetOnce(url, buf, cap);
+    int n = httpGetOnce(url, buf, cap, whole);
     if(n >= 0) return n;
     if(WiFi.status() != WL_CONNECTED) break;
   }
@@ -708,6 +816,14 @@ static void absUrl(const char* base, const char* u, char* out, size_t cap){
   else snprintf(out, cap, "%s/%s", base, u);
 }
 
+/*  Розширення самого файла (до «?» і «#»): мініатюри Wikimedia мають «.svg» посередині адреси
+    («…/Ukrainske_Radio_(2022).svg/960px-….svg.png»), а самі — PNG. Через пошук «.svg» будь-де
+    логотип «Українського радіо» з каталогу відкидався.  */
+static bool urlExt(const char* u, const char* ext){
+  const size_t el = strlen(ext), n = strcspn(u, "?#");
+  return n >= el && !strncasecmp(u + n - el, ext, el);
+}
+
 static uint8_t siteIcons(const char* html, size_t n, const char* base, SiteIcon* out, uint8_t cap){
   uint8_t k = 0;
   char a[220], b[220], u[220];
@@ -723,11 +839,11 @@ static uint8_t siteIcons(const char* html, size_t n, const char* base, SiteIcon*
       int16_t sz = 0;
       if(tagAttr(p, te, "sizes", b, sizeof(b))) sz = (int16_t)atoi(b);
       if(!sz) sz = strcasestr(a, "apple") ? 180 : (strcasestr(u, ".ico") ? 32 : 64);
-      if(strcasestr(u, ".svg") || strcasestr(u, ".webp") || !strncmp(u, "data:", 5)) continue;
+      if(urlExt(u, ".svg") || urlExt(u, ".webp") || !strncmp(u, "data:", 5)) continue;
       absUrl(base, u, out[k].url, sizeof(out[k].url)); out[k].size = sz; out[k].og = false; k++;
     }else{
       if(!(tagAttr(p, te, "property", a, sizeof(a)) || tagAttr(p, te, "name", a, sizeof(a))) || strcasecmp(a, "og:image")) continue;
-      if(!tagAttr(p, te, "content", u, sizeof(u)) || strcasestr(u, ".svg") || strcasestr(u, ".webp")) continue;
+      if(!tagAttr(p, te, "content", u, sizeof(u)) || urlExt(u, ".svg") || urlExt(u, ".webp")) continue;
       absUrl(base, u, out[k].url, sizeof(out[k].url)); out[k].size = 0; out[k].og = true; k++;
     }
     p = te;
@@ -772,19 +888,23 @@ static bool phraseIn(const char* hay, const char* name){
     потоком); 1 — пошук за назвою: та сама назва (і країна за доменом, коли вона є)
     або той самий сервер потоку зі спільним словом у назві. Пропускаємо SVG
     (його не розпакуємо). skip — скільки придатних пропустити (наступний кандидат,
-    якщо попередній значок не розпакувався).  */
-static bool pickFavicon(const char* json, const char* myName, const char* myUrl, uint8_t mode, uint8_t skip, char* out, size_t cap){
+    якщо попередній значок не розпакувався чи вийшов дрібним); лік — через усі
+    проходи (раніше скидався на кожному, і кандидати з другого проходу губились).
+    field — "favicon" або "homepage" (домашня сторінка тієї ж станції: з неї
+    значок шукаємо, коли потік іде з IP чи з чужого домену).  */
+static bool pickEntry(const char* json, const char* myName, const char* myUrl, uint8_t mode, uint8_t skip, const char* field, char* out, size_t cap){
+  const bool icon = !strcmp(field, "favicon");
   char nm[100], my[100], fav[256], cc[4], u1[200], h1[64], h2[64], myHost[64], myCc[3];
   normName(myName, my, sizeof(my));
   hostOf(myUrl, myHost, sizeof(myHost));
   const bool hasCc = tldCountry(myHost, myCc);
+  uint8_t seen = 0;
   for(uint8_t pass = 0; pass < (mode ? 3 : 1); pass++){
-    uint8_t seen = 0;
     const char* p = json;
     while((p = strchr(p, '{')) != nullptr){
       const char* e = strchr(p, '}');
       if(!e) break;
-      if(jsonField(p, e, "favicon", fav, sizeof(fav)) && !strncmp(fav, "http", 4) && !strstr(fav, ".svg")){
+      if(jsonField(p, e, field, fav, sizeof(fav)) && !strncmp(fav, "http", 4) && !(icon && urlExt(fav, ".svg"))){
         bool ok = mode == 0;
         if(mode){
           jsonField(p, e, "name", u1, sizeof(u1));
@@ -812,7 +932,7 @@ static bool pickFavicon(const char* json, const char* myName, const char* myUrl,
 }
 
 bool YoLogos::want(const char* url, const char* name){
-  if(_busy || WiFi.status() != WL_CONNECTED) return false;
+  if(_busy || WiFi.status() != WL_CONNECTED || webBusy()) return false;   /* не почався — плеєр спитає ще раз за кілька секунд */
   strlcpy(_url, url, sizeof(_url));
   strlcpy(_name, name, sizeof(_name));
   _crc = crc(url);
@@ -835,21 +955,101 @@ uint16_t YoLogos::forget(){
   return n;
 }
 
-/*  Один пошук для _url/_name (з задачі): у SPIFFS — .565 (є) або .no (нема).
-    Повертає 1 — знайдено, 0 — нема, -1 — мережа.  */
+/*  Один пошук для _url/_name (з задачі): у SPIFFS — .565 (є) або позначка «нема».
+    Повертає 1 — знайдено, 0 — нема, -1 — мережа.
+    Порядок: каталог за адресою потоку → каталог за назвою → сайт станції (за адресою
+    потоку, а коли там IP чи чужий домен — домашня сторінка з каталогу). Кожен значок
+    перевіряємо вже в клітинці: знак, який не прочитати (напис 45×7), — шукаємо далі.  */
 int YoLogos::_one(){
   s_tries = 0;
+  s_tlsMin = UINT32_MAX;
   _crc = crc(_url);
   uint8_t* buf = (uint8_t*)ps_malloc(LG_MAXDL + 1);
   uint8_t* js = (uint8_t*)ps_malloc(64 * 1024 + 1);
-  char fav[256] = {0};
-  int result = -1;                            /* -1 мережа, 0 нема логотипа, 1 є */
-  if(buf && js){
+  uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
+  SiteIcon* ic = (SiteIcon*)ps_malloc(sizeof(SiteIcon) * 10);
+  char fav[256] = {0}, cand[256], home[200] = {0};
+  uint32_t tried[20]; uint8_t nTried = 0;
+  bool found = false, netFail = false;
+
+  /*  один кандидат: скачати, вписати в клітинку, перевірити, зберегти  */
+  auto tryIcon = [&](const char* u, float crop) -> bool {
+    const uint32_t c = crc(u);
+    for(uint8_t i = 0; i < nTried; i++) if(tried[i] == c) return false;      /* цей уже пробували */
+    if(nTried < sizeof(tried) / sizeof(tried[0])) tried[nTried++] = c;
+    const int n = httpGet(u, buf, LG_MAXDL, 2, true);
+    if(n <= 64) return false;                 /* не відповів, «нема», завеликий — наступний */
+    yoBoxCover = 0; yoBoxAspect = 0;
+    if(!yoImageFit(buf, n, px, LOGO_S, LOGO_S, crop)) return false;
+    if(crop < 0 && (yoBoxCover > 0.75f || yoBoxAspect > 2.2f)){
+      Serial.printf("##LOGO#\t%s: банер без окремого логотипа (займає %.0f %%, видовжений %.1f) — шукаю далі\n", _name, yoBoxCover * 100, yoBoxAspect);
+      return false;
+    }
+    int bw, bh; yoLogoContent(px, bw, bh);
+    if(!yoLogoReadable(bw, bh)){
+      Serial.printf("##LOGO#\t%s: знак у клітинці лише %d×%d — не прочитати, шукаю далі (%s)\n", _name, bw, bh, u);
+      return false;
+    }
+    char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
+    File o = SPIFFS.open(path, "w");
+    if(!o) return false;
+    o.write((uint8_t*)px, LOGO_S * LOGO_S * 2); o.close();
+    strlcpy(fav, u, sizeof(fav));
+    return true;
+  };
+
+  /*  Wikimedia віддає зменшені копії лише стандартних ширин (798px — помилка 400):
+      «…/thumb/…/798px-Файл.png» → «…/250px-Файл.png»  */
+  auto wikiThumb = [](char* f, size_t cap){
+    if(!strstr(f, "wikimedia.org") || !strstr(f, "/thumb/")) return;      /* upload.… і thumb.… */
+    char* seg = strrchr(f, '/');
+    char* pp = seg ? strstr(seg, "px-") : nullptr;
+    if(!pp || pp <= seg + 1) return;
+    for(char* q = seg + 1; q < pp; q++) if(!isdigit((unsigned char)*q)) return;
+    char tail[200]; strlcpy(tail, pp, sizeof(tail));
+    snprintf(seg + 1, cap - (seg + 1 - f), "250%s", tail);
+  };
+
+  /*  значки з головної сторінки сайту (<link>, og:image), далі служба Google  */
+  auto trySite = [&](const char* site) -> bool {
+    uint8_t ni = 0;
+    char base[96];
+    for(uint8_t v = 0; v < 2 && !ni; v++){
+      snprintf(base, sizeof(base), v ? "https://www.%s" : "https://%s", site);
+      char hp[110]; snprintf(hp, sizeof(hp), "%s/", base);
+      const int n = httpGet(hp, buf, 512 * 1024, 2);
+      if(n > 0){ buf[n] = 0; ni = siteIcons((const char*)buf, n, base, ic, 10); }
+    }
+    /*  порядок: великі значки (≥ 96) → середина og:image → дрібніші → служба Google  */
+    int8_t order[12]; uint8_t no = 0;
+    for(int16_t lim : { (int16_t)96, (int16_t)0 })
+      for(uint8_t pass = 0; pass < 2; pass++)
+        for(uint8_t i = 0; i < ni; i++){
+          const bool big = !ic[i].og && ic[i].size >= 96;
+          if(lim == 96 && pass == 0 && big) order[no++] = i;
+          if(lim == 96 && pass == 1 && ic[i].og) order[no++] = i;
+          if(lim == 0 && pass == 0 && !ic[i].og && !big && ic[i].size >= 32) order[no++] = i;
+        }
+    /*  з великих — спершу найбільший  */
+    for(uint8_t i = 0; i < no; i++) for(uint8_t j = i + 1; j < no; j++)
+      if(!ic[order[i]].og && !ic[order[j]].og && ic[order[i]].size >= 96 && ic[order[j]].size > ic[order[i]].size){ int8_t t = order[i]; order[i] = order[j]; order[j] = t; }
+    /*  до п'яти зі сторінки, тоді служба Google  */
+    if(no > 5) no = 5;
+    order[no++] = -1;
+    for(uint8_t k = 0; k < no; k++){
+      char cu[220]; float crop = 0;
+      if(order[k] < 0) snprintf(cu, sizeof(cu), "https://www.google.com/s2/favicons?domain=%s&sz=128", site);
+      else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = -1; }   /* банер — межі логотипа */
+      if(tryIcon(cu, crop)) return true;
+    }
+    return false;
+  };
+
+  if(buf && js && px && ic){
     char q[460], enc[400];
-    int n = 0, jl = -1;
-    uint8_t mode = 0;
+    int n = 0;
     /*  1) той самий потік (як записано, і з http↔https)  */
-    for(uint8_t v = 0; v < 2 && jl != -2; v++){
+    for(uint8_t v = 0; v < 2 && !found; v++){
       char u2[210];
       if(v == 0) strlcpy(u2, _url, sizeof(u2));
       else if(!strncmp(_url, "http://", 7)){ snprintf(u2, sizeof(u2), "https://%s", _url + 7); }
@@ -858,97 +1058,53 @@ int YoLogos::_one(){
       urlEnc(u2, enc, sizeof(enc));
       snprintf(q, sizeof(q), LG_API "byurl?url=%s", enc);
       n = httpGet(q, js, 64 * 1024);
-      if(n < 0){ jl = -2; break; }
+      if(n < 0){ netFail = true; break; }
       js[n] = 0;
-      if(pickFavicon((char*)js, _name, _url, 0, 0, fav, sizeof(fav))){ jl = n; mode = 0; break; }
+      if(!home[0]) pickEntry((char*)js, _name, _url, 0, 0, "homepage", home, sizeof(home));
+      bool any = false;
+      for(uint8_t k = 0; k < 4 && !found && pickEntry((char*)js, _name, _url, 0, k, "favicon", cand, sizeof(cand)); k++){
+        any = true; wikiThumb(cand, sizeof(cand)); found = tryIcon(cand, 0);
+      }
+      if(any) break;                          /* у каталозі є — другий варіант адреси не потрібен */
     }
     /*  2) пошук за назвою: та сама назва (та країна) або той самий сервер потоку  */
-    if(jl == -1){
+    if(!found && !netFail){
       urlEnc(_name, enc, sizeof(enc));
       snprintf(q, sizeof(q), LG_API "search?name=%s&limit=40&hidebroken=true", enc);
       n = httpGet(q, js, 64 * 1024);
-      if(n < 0) jl = -2;
-      else{ js[n] = 0; if(pickFavicon((char*)js, _name, _url, 1, 0, fav, sizeof(fav))){ jl = n; mode = 1; } }
-    }
-    if(jl == -2) result = -1;
-    if(jl >= 0){
-      /*  значок з каталогу; не розпакувався (SVG під іншим ім'ям, битий файл) — наступний кандидат  */
-      result = 0;
-      for(uint8_t k = 0; k < 3 && result == 0; k++){
-        if(k && !pickFavicon((char*)js, _name, _url, mode, k, fav, sizeof(fav))) break;
-        /*  Wikimedia віддає зменшені копії лише стандартних ширин (798px — помилка 400):
-            «…/thumb/…/798px-Файл.png» → «…/250px-Файл.png»  */
-        if(strstr(fav, "upload.wikimedia.org") && strstr(fav, "/thumb/")){
-          char* seg = strrchr(fav, '/');
-          char* px = seg ? strstr(seg, "px-") : nullptr;
-          if(px && px > seg + 1){
-            bool digits = true; for(char* q = seg + 1; q < px; q++) if(!isdigit((unsigned char)*q)) digits = false;
-            if(digits){ char tail[200]; strlcpy(tail, px, sizeof(tail)); snprintf(seg + 1, sizeof(fav) - (seg + 1 - fav), "250%s", tail); }
-          }
+      if(n < 0) netFail = true;
+      else{
+        js[n] = 0;
+        if(!home[0]) pickEntry((char*)js, _name, _url, 1, 0, "homepage", home, sizeof(home));
+        for(uint8_t k = 0; k < 5 && !found && pickEntry((char*)js, _name, _url, 1, k, "favicon", cand, sizeof(cand)); k++){
+          wikiThumb(cand, sizeof(cand)); found = tryIcon(cand, 0);
         }
-        n = httpGet(fav, buf, LG_MAXDL, 2);
-        if(n < 0) continue;                       /* сайт значка не відповів — мертве посилання, наступний кандидат */
-        uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
-        if(px && n > 0 && yoImageFit(buf, n, px, LOGO_S, LOGO_S)){
-          char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
-          File o = SPIFFS.open(path, "w");
-          if(o){ o.write((uint8_t*)px, LOGO_S * LOGO_S * 2); o.close(); result = 1; }
-        }
-        if(px) free(px);
       }
     }
-    /*  у каталозі немає або його значки не відкрились — з сайту станції  */
-    if(jl == -1 || (jl >= 0 && result == 0)){
-      /*  3) у каталозі немає — значок із сайту станції (головна сторінка: <link>, og:image; далі служба Google)  */
-      result = 0;
-      char host[64], site[64], label[40];
-      hostOf(_url, host, sizeof(host));
-      siteOf(host, site, sizeof(site), label, sizeof(label));
-      if(site[0] && siteMatches(label, _name)){
-        /*  головна сторінка сайту: значки з <link> і og:image  */
-        SiteIcon ic[10]; uint8_t ni = 0;
-        char base[96];
-        for(uint8_t v = 0; v < 2 && !ni; v++){
-          snprintf(base, sizeof(base), v ? "https://www.%s" : "https://%s", site);
-          char home[110]; snprintf(home, sizeof(home), "%s/", base);
-          n = httpGet(home, buf, 512 * 1024, 2);
-          if(n > 0){ buf[n] = 0; ni = siteIcons((const char*)buf, n, base, ic, 10); }
-        }
-        /*  порядок: великі значки (≥ 96) → середина og:image → дрібніші → служба Google  */
-        int8_t order[12]; uint8_t no = 0;
-        for(int16_t lim : { (int16_t)96, (int16_t)0 })
-          for(uint8_t pass = 0; pass < 2; pass++)
-            for(uint8_t i = 0; i < ni; i++){
-              const bool big = !ic[i].og && ic[i].size >= 96;
-              if(lim == 96 && pass == 0 && big) order[no++] = i;
-              if(lim == 96 && pass == 1 && ic[i].og) order[no++] = i;
-              if(lim == 0 && pass == 0 && !ic[i].og && !big && ic[i].size >= 32) order[no++] = i;
-            }
-        /*  з великих — спершу найбільший  */
-        for(uint8_t i = 0; i < no; i++) for(uint8_t j = i + 1; j < no; j++)
-          if(!ic[order[i]].og && !ic[order[j]].og && ic[order[i]].size >= 96 && ic[order[j]].size > ic[order[i]].size){ int8_t t = order[i]; order[i] = order[j]; order[j] = t; }
-        order[no++] = -1;                                   /* служба Google */
-        for(uint8_t k = 0; k < no && k < 6 && result == 0; k++){
-          char cu[220]; float crop = 0;
-          if(order[k] < 0) snprintf(cu, sizeof(cu), "https://www.google.com/s2/favicons?domain=%s&sz=128", site);
-          else{ strlcpy(cu, ic[order[k]].url, sizeof(cu)); if(ic[order[k]].og) crop = -1; }   /* банер — межі логотипа */
-          n = httpGet(cu, buf, LG_MAXDL, 2);
-          if(n < 0) continue;                     /* не відповів — наступний; усі — «нема» (кнопка «Шукати знову» спробує ще) */
-          uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
-          if(px && n > 64 && yoImageFit(buf, n, px, LOGO_S, LOGO_S, crop)){
-            char path[28]; snprintf(path, sizeof(path), "/logo/%08x.565", (unsigned)_crc);
-            File o = SPIFFS.open(path, "w");
-            if(o){ o.write((uint8_t*)px, LOGO_S * LOGO_S * 2); o.close(); result = 1; strlcpy(fav, cu, sizeof(fav)); }
-          }
-          if(px) free(px);
-        }
+    /*  3) сайт станції: за адресою потоку; коли там IP чи чужий домен — домашня сторінка
+          з каталогу («Громадське радіо» грає з IP, а значок — на hromadske.radio)  */
+    if(!found && !netFail){
+      char host[64], site[64], site0[64] = {0}, label[40];
+      for(uint8_t src = 0; src < 2 && !found; src++){
+        if(src && !home[0]) break;
+        hostOf(src ? home : _url, host, sizeof(host));
+        siteOf(host, site, sizeof(site), label, sizeof(label));
+        if(!site[0] || !siteMatches(label, _name) || !strcmp(site, site0)) continue;
+        strlcpy(site0, site, sizeof(site0));
+        found = trySite(site);
       }
     }
   }
+  const bool mem = buf && js && px && ic;
   if(buf) free(buf);
   if(js) free(js);
+  if(px) free(px);
+  if(ic) free(ic);
+  const int result = found ? 1 : (netFail || !mem) ? -1 : 0;
   if(result == 0) noAdd(_crc);                 /* нема — у список (у файл — наприкінці, одним записом) */
-  Serial.printf("##LOGO#\t%s: %s %s (повторів %u)\n", _name, result > 0 ? "знайдено" : result == 0 ? "нема" : "мережа", fav, s_tries);
+  Serial.printf("##LOGO#\t%s: %s %s (повторів %u; внутрішньої пам'яті під час TLS лишалось %d Б, стек вільний %u Б)\n", _name,
+                result > 0 ? "знайдено" : result == 0 ? "нема" : "мережа", fav, s_tries,
+                s_tlsMin == UINT32_MAX ? -1 : (int)s_tlsMin, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   if(result > 0) _ver++;
   return result;
 }
@@ -981,6 +1137,7 @@ bool YoLogos::test(const char* favUrl){
 void YoLogos::_testTask(void* arg){
   YoLogos* s = (YoLogos*)arg;
   s_tries = 0;
+  s_tlsMin = UINT32_MAX;
   uint8_t* buf = (uint8_t*)ps_malloc(LG_MAXDL + 1);
   uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
   int n = buf ? httpGet(s->_tu, buf, LG_MAXDL) : -1;
@@ -990,6 +1147,8 @@ void YoLogos::_testTask(void* arg){
   Serial.printf("LOGOTEST %s\n  байтів %d (повторів %u), підпис %02X %02X %02X %02X, розпаковано: %s за %u мкс\n",
                 s->_tu, n, s_tries, n > 3 ? buf[0] : 0, n > 3 ? buf[1] : 0, n > 3 ? buf[2] : 0, n > 3 ? buf[3] : 0,
                 ok ? "так" : "НІ", (unsigned)us);
+  Serial.printf("  внутрішньої пам'яті під час TLS лишалось %d Б (зараз %u), стек вільний %u Б\n", s_tlsMin == UINT32_MAX ? -1 : (int)s_tlsMin,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)uxTaskGetStackHighWaterMark(nullptr));
   if(buf) free(buf);
   if(px) free(px);
   s->_busy = false;
@@ -1018,12 +1177,52 @@ static void noAdd(uint32_t c){
 }
 
 /*  З задачі логотипа (не з головного циклу: обхід SPIFFS довгий).  */
+/*  Один раз після зміни правил: збережені логотипи, які в клітинці не прочитати (білий
+    квадрат «Наше Радіо», напис «Громадське радіо» 45×7, крихітний знак на банері), —
+    стерти; список «нема» скинути, щоб і там, де раніше не знайшли, шукалось новими
+    правилами. Прохід «усі логотипи» після цього — знову (лише по відсутніх).  */
+static void logoReview(){
+  const uint16_t CAP = 200;
+  char (*bad)[32] = (char (*)[32])ps_malloc((size_t)CAP * 32);
+  uint16_t* px = (uint16_t*)ps_malloc(LOGO_S * LOGO_S * 2);
+  uint16_t k = 0, all = 0;
+  if(bad && px){
+    File dir = SPIFFS.open("/");
+    if(dir){
+      for(File e = dir.openNextFile(); e && k < CAP; e = dir.openNextFile()){
+        const char* nm = e.path();
+        const size_t l = strlen(nm);
+        if(strstr(nm, "/logo/") && l > 4 && !strcmp(nm + l - 4, ".565") && e.size() == LOGO_S * LOGO_S * 2
+           && e.read((uint8_t*)px, LOGO_S * LOGO_S * 2) == LOGO_S * LOGO_S * 2){
+          all++;
+          int bw, bh; yoLogoContent(px, bw, bh);
+          if(!yoLogoReadable(bw, bh)){
+            Serial.printf("##LOGO#\tперегляд: %s — знак %d×%d, не прочитати — стираю\n", nm, bw, bh);
+            strlcpy(bad[k++], nm, 32);
+          }
+        }
+        e.close();
+      }
+      dir.close();
+    }
+    for(uint16_t i = 0; i < k; i++) SPIFFS.remove(bad[i]);
+  }
+  if(bad) free(bad);
+  if(px) free(px);
+  Serial.printf("##LOGO#\tперегляд логотипів за новими правилами: усього %u, стерто %u, позначок «нема» скинуто %u\n",
+                (unsigned)all, (unsigned)k, (unsigned)s_noN);
+  s_noN = 0; s_passDone = false; s_noDirty = true;
+  if(k) logos.bump();
+}
+
 static void noLoad(){
   if(s_noLoaded) return;
   File f = SPIFFS.open(LG_NOLIST, "r");
+  uint8_t rules = 1;                            /* списку немає — збережене могло лишитися від старих правил */
   if(f){
     String h = f.readStringUntil('\n'); h.trim();
-    s_passDone = s_passDone0 = (h == "done");
+    s_passDone = s_passDone0 = h.startsWith("done");
+    if(h.length() > 5) rules = (uint8_t)atoi(h.c_str() + 5);
     while(f.available()){
       String l = f.readStringUntil('\n'); l.trim();
       if(l.length() == 8) noAdd((uint32_t)strtoul(l.c_str(), nullptr, 16));
@@ -1053,6 +1252,7 @@ static void noLoad(){
     free(old);
     if(k) Serial.printf("##LOGO#\tстарі позначки перенесено в один список: %u файлів\n", (unsigned)k);
   }
+  if(rules < LG_RULES) logoReview();
   s_noLoaded = true;
 }
 
@@ -1060,7 +1260,7 @@ static void noSave(){
   if(!s_noDirty && s_passDone == s_passDone0) return;
   File o = SPIFFS.open(LG_NOLIST, "w");
   if(!o) return;
-  o.print(s_passDone ? "done\n" : "todo\n");
+  o.printf("%s %u\n", s_passDone ? "done" : "todo", (unsigned)LG_RULES);
   for(uint16_t i = 0; i < s_noN; i++) o.printf("%08x\n", (unsigned)s_no[i]);
   o.close();
   s_noDirty = false; s_passDone0 = s_passDone;
@@ -1097,6 +1297,30 @@ void YoLogos::_allTask(void* arg){
   YoLogos* s = (YoLogos*)arg;
   noLoad();
   if(s->_bForget){ s->_bForget = false; }
+  if(s->_bWipe){
+    /*  «logowipe» (налагодження): усі логотипи наново — стерти файли по одному, з паузами
+        (кожне стирання — запис у флеш), список «нема» — порожній, прохід — знову.  */
+    s->_bWipe = false;
+    const uint16_t CAP = 200;
+    char (*all)[32] = (char (*)[32])ps_malloc((size_t)CAP * 32);
+    uint16_t k = 0;
+    if(all){
+      File dir = SPIFFS.open("/");
+      if(dir){
+        for(File e = dir.openNextFile(); e && k < CAP; e = dir.openNextFile()){
+          const char* nm = e.path(); const size_t l = strlen(nm);
+          if(strstr(nm, "/logo/") && l > 4 && !strcmp(nm + l - 4, ".565")) strlcpy(all[k++], nm, 32);
+          e.close();
+        }
+        dir.close();
+      }
+      for(uint16_t i = 0; i < k; i++){ SPIFFS.remove(all[i]); vTaskDelay(pdMS_TO_TICKS(30)); }
+      free(all);
+    }
+    s_noN = 0; s_noDirty = true; s_passDone = false;
+    s->bump();
+    Serial.printf("##LOGO#\tусі логотипи стерто (%u) — шукаю наново\n", (unsigned)k);
+  }
   if(s_passDone && !s->_bForce){
     Serial.println("##LOGO#\tусі логотипи: прохід уже був — не повторюємо");
     s->_bOn = false; s->_busy = false; vTaskDelete(nullptr);
@@ -1133,6 +1357,11 @@ void YoLogos::_allTask(void* arg){
     char p[28];
     snprintf(p, sizeof(p), "/logo/%08x.565", (unsigned)c);
     if(SPIFFS.exists(p)) continue;
+    if(webBusy()){                              /* сторінка вантажиться — звільнити пам'ять, продовжити згодом */
+      Serial.println("##LOGO#\tусі логотипи: веб-сторінка вантажиться — продовжу згодом");
+      complete = false; s->_bPending = true;
+      break;
+    }
     /*  обкладинка проповіді просить мережу — чекаємо (до 2 хв)  */
     for(uint16_t w2 = 0; s->_hold && w2 < 600; w2++) vTaskDelay(pdMS_TO_TICKS(200));
     /*  без мережі — чекаємо до хвилини, далі прохід перервано (наступного разу — знову)  */
@@ -1152,7 +1381,8 @@ void YoLogos::_allTask(void* arg){
   if(complete && s->_bOn) s_passDone = true;
   noSave();                                     /* один запис — і лише якщо список змінився */
   Serial.printf("##LOGO#\tусі логотипи: %s — знайдено нових %u, мережа не відповіла %u, станцій %u\n",
-                complete ? "готово" : "решту — наступного увімкнення", (unsigned)s->_bFound, (unsigned)s->_bNet, (unsigned)n);
+                complete ? "готово" : s->_bPending ? "решту — щойно звільниться веб-сторінка" : "решту — наступного увімкнення",
+                (unsigned)s->_bFound, (unsigned)s->_bNet, (unsigned)n);
   s->_bOn = false;
   s->_busy = false;
   vTaskDelete(nullptr);
@@ -1172,11 +1402,15 @@ void YoLogos::fetchAll(){
 void YoLogos::fetchAllForce(){ _bForce = true; fetchAll(); }
 
 void YoLogos::loop(){
-  static bool autoDone = false;
+  static bool autoDone = false, seeded = false;
   static uint32_t pendT = 0;
+  /*  Версія — ще й у адресі логотипа для сторінки (/logo/….565?v=N, кеш браузера на добу). Після
+      перезапуску лік ішов знову з нуля, і браузер показував старий логотип за тією самою адресою
+      («Радіо Культура» лишалась фотографією неба). Тепер початок — випадковий.  */
+  if(!seeded){ seeded = true; _ver += (esp_random() & 0xFFFFF) << 8; }
   /*  раз за увімкнення (задача сама вирішить, чи прохід уже був)  */
   if(!autoDone && WiFi.status() == WL_CONNECTED && millis() > 25000){ autoDone = true; fetchAll(); }
-  if(_bPending && !_busy && WiFi.status() == WL_CONNECTED && millis() - pendT > 5000){
+  if(_bPending && !_busy && WiFi.status() == WL_CONNECTED && millis() - pendT > 5000 && !webBusy()){
     pendT = millis(); _bPending = false; fetchAll();
   }
 }

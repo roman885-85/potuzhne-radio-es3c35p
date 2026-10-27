@@ -287,7 +287,10 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
   uint32_t step = (uint32_t)(((uint64_t)c.rate << 16) / rate);
   uint64_t pos = startPos;
   bool handed = false;
-  if(ev < SFX_N && !startPos) _audible[ev] = millis() | 1;   /* підсилювач прокинувся — звук іде зараз */
+  if(ev < SFX_N && !startPos){
+    _audible[ev] = millis() | 1;                     /* підсилювач прокинувся — звук іде зараз */
+    if(ev == SFX_START) Serial.printf("##SFX#\tзвук увімкнення пішов на %u мс\n", (unsigned)millis());
+  }
   for(;;){
     if(player.isRunning()){
       /*  посеред звуку заграла станція — решту домішає задача звуку  */

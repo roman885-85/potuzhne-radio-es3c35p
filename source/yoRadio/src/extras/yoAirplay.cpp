@@ -289,6 +289,7 @@ void YoAirplay::_keyTask(void* arg){
   if(buf){
     WiFiClientSecure cli; cli.setInsecure();         /* що отримали — перевіряємо за SHA-256 нижче */
     HTTPClient http;
+    http.useHTTP10(true);                            /* без відповіді частинами (chunked): потік читаємо сирим */
     http.setTimeout(10000); http.setConnectTimeout(10000);
     if(http.begin(cli, KEY_URL)){
       http.addHeader("User-Agent", "potuzhne-radio");

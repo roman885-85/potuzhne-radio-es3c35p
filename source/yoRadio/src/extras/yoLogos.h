@@ -31,6 +31,7 @@ class YoLogos {
         з'явилась мережа (позначка /logo/all.ok); ще — кнопка в «Розробнику», команда logoall.  */
     void     fetchAll();
     void     fetchAllForce();                           /* кнопка: прохід навіть якщо вже був */
+    void     wipeAll(){ _bWipe = true; fetchAllForce(); }   /* налагодження (logowipe): стерти всі й шукати наново */
     bool     isNo(uint32_t crc) const;                  /* у списку «нема логотипа» (список у пам'яті, не файл на станцію) */
     void     loop();                                    /* з головного циклу */
     bool     test(const char* favUrl);                  /* налагодження (logotest): скачати й розпакувати один значок */
@@ -50,6 +51,7 @@ class YoLogos {
     volatile uint16_t _bFound = 0, _bNet = 0;
     volatile bool _bForce = false;                      /* прохід навіть якщо вже був (кнопка) */
     volatile bool _bForget = false;                     /* перед проходом скинути позначки «нема» */
+    volatile bool _bWipe = false;                       /* перед проходом стерти всі логотипи (logowipe) */
     volatile bool _hold = false;
     int      _one();                                    /* пошук для _url/_name (у задачі) */
     char*    _tu = nullptr;                             /* адреса значка для test() (PSRAM) */
@@ -64,7 +66,12 @@ class YoLogos {
 
 extern YoLogos logos;
 
-/*  Розпакувати зображення (PNG / ICO / JPEG) у W x H RGB565, прозоре — на білому.  */
+/*  Розмір самого знака в готовій клітинці LOGO_S×LOGO_S і чи його прочитати.  */
+void yoLogoContent(const uint16_t* px, int& bw, int& bh);
+bool yoLogoReadable(int bw, int bh);
+
+/*  Розпакувати зображення (PNG / ICO / JPEG) у W x H RGB565, прозоре — на білому
+    (світлий знак на прозорому — на темній підкладці).  */
 /*  crop > 0 — вирізати з середини прямокутник з пропорцією crop (банер og:image).  */
 bool yoImageFit(const uint8_t* data, size_t len, uint16_t* out, int W, int H, float crop = 0);
 

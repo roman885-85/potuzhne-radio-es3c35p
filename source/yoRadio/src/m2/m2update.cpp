@@ -24,6 +24,7 @@ static const char* vGh(){
   static char b[48];
   if(ota.state() == OTA_CHECKING) return "перевіряю…";
   if(!ota.latest()[0]) return "ще не перевіряли";
+  if(!ota.hasFile()) return "для цієї плати ще немає";   /* випуск інших плат — не наш */
   snprintf(b, sizeof(b), "%s%s", ota.latest(), ota.available() ? " — новіша" : "");
   return b;
 }
@@ -31,7 +32,7 @@ static const char* vUpdNote(){
   static char b[200];
   switch(ota.state()){
     case OTA_CHECKING: return "звертаюсь до GitHub…";
-    case OTA_LATEST:   return "у радіо остання версія";
+    case OTA_LATEST:   return ota.hasFile() ? "у радіо остання версія" : "випусків для цієї плати ще не було";
     case OTA_ERROR:    snprintf(b, sizeof(b), tr("не вийшло: %s"), tr(ota.error())); return b;
     case OTA_AVAILABLE: {
       /*  перші рядки опису випуску  */
@@ -58,8 +59,8 @@ static Item s_updItems[] = {
   iSection("КАНАЛ"),
   iSwitch("Пробні версії", IC_CODE, C_ORANGE, [](){ return (int32_t)extras.s.otaBeta; },
           [](int32_t v){ extras.s.otaBeta = v ? 1 : 0; extras.changed(); ota.check(extras.s.otaBeta); }),
-  iNote([](){ return extras.s.otaBeta ? "пропонувати й попередні випуски — ще не перевірені для всіх"
-                                      : "лише випуски для всіх; увімкніть, щоб ставити пробні"; }, 36),
+  iNote([](){ return extras.s.otaBeta ? "пропонувати й попередні випуски —\nще не перевірені для всіх"
+                                      : "лише випуски для всіх;\nувімкніть, щоб ставити пробні"; }, 36),
 };
 
 class UpdatePage : public ListPage {

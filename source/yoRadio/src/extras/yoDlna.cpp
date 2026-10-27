@@ -26,7 +26,7 @@ const char DESC[] = R"(<?xml version="1.0" encoding="utf-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0"><specVersion><major>1</major><minor>0</minor></specVersion>
 <device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
 <friendlyName>%s</friendlyName><manufacturer>ПОТУЖНЕ РАДІО</manufacturer>
-<manufacturerURL>https://github.com/roman885-85/potuzhne-radio</manufacturerURL>
+<manufacturerURL>https://github.com/)" PR_REPO R"(</manufacturerURL>
 <modelDescription>Інтернет-радіо )" PR_BOARD R"(</modelDescription><modelName>ПОТУЖНЕ РАДІО</modelName>
 <modelNumber>%s</modelNumber><serialNumber>%s</serialNumber><UDN>uuid:%s</UDN>
 <serviceList>

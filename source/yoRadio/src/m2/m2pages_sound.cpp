@@ -207,7 +207,7 @@ static void roomChart(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
   }
 }
 static const char* vRoomNote(){
-  static char b[96];
+  static char b[160];
   uint8_t st = yoDsp.roomState();
   if(s_rmErr[0])                 snprintf(b, sizeof(b), "%s", s_rmErr);
   else if(st == 1 || st == 2)    snprintf(b, sizeof(b), "%s… %u%%", yoDsp.roomMsg(), (unsigned)yoDsp.roomProgress());
@@ -315,7 +315,7 @@ static void gestRow(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h, uint8_t 
 static void gestRow2(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){ gestRow(g, x, y, w, h, 0); }
 static void gestRow3(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){ gestRow(g, x, y, w, h, 1); }
 static const char* vHeard(){
-  static char b[72];
+  static char b[128];
   uint32_t now = millis();
   if(!extras.s.micOn) snprintf(b, sizeof(b), "мікрофон вимкнено — жести не слухаються");
   else if(mic.heard() && now - mic.heardMs() < 8000) snprintf(b, sizeof(b), tr("почуто: %s — %s"), tr(YoMic::gestureName(mic.heard())), tr(YoMic::actionName(YoMic::actionFor((MicGesture)mic.heard()))));

@@ -286,8 +286,17 @@ const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; 
 function crc32(str) { let c = 0xFFFFFFFF; for (const b of new TextEncoder().encode(str)) c = CRC_T[(c ^ b) & 255] ^ (c >>> 8); return ((c ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, '0'); }
 const PAL = [0x3A8D, 0x5A4B, 0x2C6A, 0x6A28, 0x2B0F, 0x7A6C, 0x4B09, 0x31CC].map(v => `rgb(${((v >> 11) & 31) * 255 / 31 | 0},${((v >> 5) & 63) * 255 / 63 | 0},${(v & 31) * 255 / 31 | 0})`);
 const LOGO = { ver: -1, have: new Set(), url: new Map(), q: [], busy: 0 };
+/*  Зміна версії — перекачуємо лише нове: під час проходу «усі логотипи» версія росте з кожним
+    знайденим, і сторінка щоразу тягнула з радіо всі ~45 файлів (по три разом). Це забирало
+    внутрішню пам'ять радіо, і 27.10.2026 станція двічі втратила потік на 34 с. Тепер із запам'ятованих
+    забуваємо лише зниклі; замінений на місці (свій логотип, «Знайти заново») скидаємо там же.  */
 async function loadLogos() {
-  try { const j = await api('/api/logos'); const changed = j.v !== LOGO.ver; LOGO.ver = j.v; LOGO.have = new Set(j.f); if (changed) { LOGO.url.clear(); bus('logos'); } } catch (e) {}
+  try {
+    const j = await api('/api/logos'), changed = j.v !== LOGO.ver, nf = new Set(j.f);
+    if (changed) for (const crc of [...LOGO.url.keys()]) if (!nf.has(crc + '.565') && !nf.has(crc + '.jpg')) LOGO.url.delete(crc);
+    LOGO.ver = j.v; LOGO.have = nf;
+    if (changed) bus('logos');
+  } catch (e) {}
 }
 function initials(name) {
   const w = (name || '').split(/\s+/).map(x => x.replace(/^[^\p{L}\p{N}]+/u, '')).filter(Boolean);
@@ -335,7 +344,7 @@ function uploadLogo(url, file) {
       const d = cx.getImageData(0, 0, 45, 45).data, out = new DataView(new ArrayBuffer(4050));
       for (let i = 0; i < 2025; i++) out.setUint16(i * 2, ((d[i * 4] & 0xF8) << 8) | ((d[i * 4 + 1] & 0xFC) << 3) | (d[i * 4 + 2] >> 3), true);
       const fd = new FormData(); fd.append('logo', new Blob([out.buffer]), crc32(url) + '.565');
-      try { await api('/api/logo', { method: 'POST', body: fd }); await loadLogos(); res(); } catch (e) { rej(e); }
+      try { await api('/api/logo', { method: 'POST', body: fd }); LOGO.url.delete(crc32(url)); await loadLogos(); res(); } catch (e) { rej(e); }
       URL.revokeObjectURL(img.src);
     };
     img.onerror = () => rej(new Error('це не картинка'));
@@ -815,7 +824,7 @@ function editStation(i) {
     const crc = crc32(ur.value.trim()), has = LOGO.have.has(crc + '.565') || LOGO.have.has(crc + '.jpg');
     logoBox.append(logoEl(nm.value, ur.value.trim()), file,
       btn('Свій логотип', 'image', () => file.click(), 'sm'),
-      has ? btn('Знайти заново', 'refresh', async () => { await setx({ logoDel: crc }); setTimeout(async () => { await loadLogos(); drawLogo(); redrawStations(); }, 600); }, 'sm ghost') : h('span', { class: 'note', style: { margin: 0 } }, 'Радіо саме шукає логотип у каталозі, коли станція заграє.'));
+      has ? btn('Знайти заново', 'refresh', async () => { await setx({ logoDel: crc }); LOGO.url.delete(crc); setTimeout(async () => { LOGO.url.delete(crc); await loadLogos(); drawLogo(); redrawStations(); }, 600); }, 'sm ghost') : h('span', { class: 'note', style: { margin: 0 } }, 'Радіо саме шукає логотип у каталозі, коли станція заграє.'));
   };
   ur.addEventListener('change', drawLogo);
   drawLogo();
@@ -2010,7 +2019,7 @@ function otaCard() {
   otaCard.draw = draw;
   draw();
   return card('З GitHub', kv, notes, stat, prog, h('div', { class: 'bar' }, chk, ins),
-    h('p', { class: 'note', style: { margin: '8px 0 0' } }, 'Нові версії виходять на github.com/roman885-85/potuzhne-radio. Радіо само завантажує прошивку й сторінку, станції та налаштування лишаються.'));
+    h('p', { class: 'note', style: { margin: '8px 0 0' } }, 'Нові версії виходять на github.com/' + ((S && S.repo) || 'roman885-85/potuzhne-radio') + '. Радіо само завантажує прошивку й сторінку, станції та налаштування лишаються.'));
 }
 
 /* ---------------------------------------------------------------- про пристрій */

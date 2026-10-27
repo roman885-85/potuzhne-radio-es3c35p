@@ -66,6 +66,11 @@ void Telnet::cleanupClients() {
 }
 
 void Telnet::handleSerial(){
+#ifdef YO_DEBUG
+  /*  Порт читає консоль перевірок (menu/yoDebug.cpp; команди yoRadio — через «cmd назва=значення»).
+      Два читачі одного порту ділили рядки навпіл: частина команд губилась («unknown command»).  */
+  return;
+#endif
   /*  readStringUntil чекає кінець рядка до секунди (типовий timeout Stream) —
       у головному циклі це чутно на звуці; недочитаний рядок краще відкласти.  */
   static bool once = true;

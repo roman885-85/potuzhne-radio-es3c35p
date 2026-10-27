@@ -94,6 +94,7 @@ void YoSermons::_task(void* arg){
     WiFiClientSecure cli;
     cli.setInsecure();                   /* список публічний, перевірка сертифіката тут нічого не дає */
     HTTPClient http;
+    http.useHTTP10(true);                /* без відповіді частинами (chunked): потік читаємо сирим */
     http.setTimeout(8000);
     http.setConnectTimeout(8000);
     if(!http.begin(cli, SERMON_SITE "/api/sermons")){ err = "адреса сайту"; goto done; }
@@ -286,7 +287,7 @@ bool yoJpegFit(const uint8_t* jpg, size_t len, uint16_t* out, int W, int H, floa
       uint16_t fill = 0;                          /* поля: чорні, як і було; банер — його фоном */
       if(crop < 0){
         uint32_t a0, b0, aw, bh;
-        yoContentBox(rgb, c.w, c.h, 3, a0, b0, aw, bh, &fill);
+        yoContentBox(rgb, c.w, c.h, 3, a0, b0, aw, bh, &fill);   /* заодно yoBoxCover / yoBoxAspect */
         cx0 = (int)a0; cy0 = (int)b0; cw = (int)aw; ch = (int)bh;
       }else if(crop > 0){
         if((float)c.w / c.h > crop){ cw = (int)(c.h * crop); cx0 = (c.w - cw) / 2; }
@@ -340,7 +341,7 @@ void YoSermons::_coverTask(void* arg){
       jpg = (uint8_t*)ps_malloc(COVER_MAXB);
       if(jpg){
         WiFiClientSecure cli; cli.setInsecure();
-        HTTPClient http; http.setTimeout(4000); http.setConnectTimeout(4000);
+        HTTPClient http; http.useHTTP10(true); http.setTimeout(4000); http.setConnectTimeout(4000);   /* HTTP/1.0 — без chunked */
         char url[160]; snprintf(url, sizeof(url), "%s%s", SERMON_SITE, it->cover);
         if(http.begin(cli, url) && http.GET() == 200){
           WiFiClient* st = http.getStreamPtr();

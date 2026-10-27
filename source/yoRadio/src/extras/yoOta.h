@@ -1,7 +1,8 @@
 /*  ---------------------------------------------------------------------------
  *  Оновлення з GitHub.
  *
- *  Радіо саме дивиться останній випуск у github.com/roman885-85/potuzhne-radio
+ *  Радіо саме дивиться останній випуск у своєму репозиторії на GitHub (PR_REPO у myoptions.h:
+ *  ES3C35P — roman885-85/potuzhne-radio-es3c35p, ES3C28P — roman885-85/potuzhne-radio)
  *  (через хвилину після появи мережі й далі двічі на добу) і, якщо там новіша
  *  версія, показує це в меню. Встановлення — лише за дотиком людини:
  *    1. звук зупиняється;
@@ -29,6 +30,7 @@ class YoOta {
     bool busy() const { return _st == OTA_CHECKING || installing(); }
     bool installing() const { return _st >= OTA_PREPARE; }
     bool available() const { return _avail; }            /* знайдено новішу (навіть якщо зараз щось інше) */
+    bool hasFile() const { return _urlFw[0] != 0; }      /* в останньому випуску є файл саме для цієї плати */
     uint8_t progress() const { return _pct; }             /* 0..100 поточного кроку */
     uint32_t done() const { return _got; }
     uint32_t total() const { return _size; }

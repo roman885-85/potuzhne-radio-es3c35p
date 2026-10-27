@@ -15,8 +15,13 @@
 
 namespace m2 {
 
+/*  p2perf (консоль): час етапів кадру головного екрана — m2player.cpp  */
+extern volatile uint32_t p2Frames, p2Strips, p2Px, p2BgUs, p2DrawUs, p2PushUs, p2EndUs, p2MaxUs;
+extern volatile uint32_t p2Calls, p2PreUs, p2SpecUs, p2LoopGap;
+
 class Player {
   public:
+    void volAnimFrom(float v) { _volShownF = v; }   /* консоль volanim: показати рух повзунка, гучність не міняючи */
     bool on() const { return true; }     /* старого вигляду більше немає */
     void reloadLogo(){ _logoKey = 0xFFFFFFFF; invalAll(); }   /* «шукати логотипи знову» */
     void show();                         /* задача дисплея: плеєр щойно став на екран */
@@ -70,6 +75,7 @@ class Player {
     volatile bool _down = false;
     volatile int16_t _volDrag = -1;       /* гучність під пальцем (0..254) */
     float _volShownF = -1;                /* показана гучність: плавно наздоганяє ціль */
+    uint32_t _volAnimT = 0;               /* мить попереднього кроку анімації гучності */
     uint32_t _volSent = 0; int16_t _volLast = -1;
     volatile float _seek = -1;           /* пульт: куди перемотає */
     volatile int8_t _btn = -1;           /* пульт: натиснута кнопка */

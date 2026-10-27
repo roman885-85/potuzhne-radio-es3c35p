@@ -80,13 +80,22 @@ void YoSplash::tick(){
     /*  Чекаємо, доки звук увімкнення справді зазвучить (підсилювач прокидається
         ~0,4 с), щоб точка засвітилась разом зі «зловленою станцією». Звуку не
         буде (вимкнено) — починаємо одразу; довше 3 с не чекаємо ніколи.  */
-    bool heard = sfx.audibleMs(SFX_START) && sfx.audibleMs(SFX_START) >= _holdSince;
+    /*  Звук міг піти ще до того, як заставка почала чекати: файл заставки (0,76 МБ) читається
+        ~0,1 с. 26.10.2026: звук — на 1138 мс, чекати почали на 1190 — заставка вважала, що звуку
+        ще не було, і чекала до межі 3 с (перший кадр на 4,2 с, коли звук уже відзвучав; власник:
+        «звук іде, а заставка — лише в кінці»). Тож і звук, що почався до 2,5 с раніше, — «почули».  */
+    const uint32_t a = sfx.audibleMs(SFX_START);
+    bool heard = a && (int32_t)(a - _holdSince) > -2500;
     bool none  = sfx.ready() && !sfx.willPlay(SFX_START) && now - _holdSince > 300;
     if(!heard && !none && now - _holdSince < 3000) return;
     _hold = false;
     _nextMs = now;
   }
-  if(!_firstMs){ _firstMs = now ? now : 1; Serial.printf("##DSP#\tзаставка: перший кадр на %u мс від увімкнення\n", (unsigned)now); }
+  if(!_firstMs){
+    _firstMs = now ? now : 1;
+    Serial.printf("##DSP#\tзаставка: перший кадр на %u мс від увімкнення (чекала звуку з %u мс), підсвітка %u\n",
+                  (unsigned)now, (unsigned)_holdSince, (unsigned)ledcRead(BRIGHTNESS_PIN));
+  }
   if((int32_t)(now - _nextMs) < 0) return;
   uint16_t idx;
   if(_cur < _wrap) idx = _cur;              /* звичайний кадр */

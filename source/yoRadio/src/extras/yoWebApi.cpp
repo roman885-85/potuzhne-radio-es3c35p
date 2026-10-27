@@ -26,6 +26,13 @@
 #include "esp_core_dump.h"
 #include "esp_flash.h"
 
+/*  Коли веб-сервер востаннє віддавав файл (сторінку, логотип). Сторінка, що вантажиться, тримає
+    кілька з'єднань, а з ними до 5,7 КБ внутрішньої пам'яті на кожне. Пошук логотипів (yoLogos.cpp)
+    у цей час не починає запитів: 27.10.2026 разом вони вибирали внутрішню пам'ять до 3 КБ,
+    і станція двічі втратила потік на 34 с.  */
+volatile uint32_t yoWebHeavyAt = 0;
+bool yoWebHeavyMark(AsyncWebServerRequest*){ yoWebHeavyAt = millis(); if(!yoWebHeavyAt) yoWebHeavyAt = 1; return true; }
+
 /*  ---------- JSON у готовий буфер ----------
     Буфери лежать у PSRAM і живуть весь час: відповідь іде з них без копії
     (beginResponse_P на ESP32 — звичайний memcpy). Два браузери, що
@@ -200,6 +207,7 @@ static void onState(AsyncWebServerRequest* r){
   o.ks("build", prBuild());
   o.ks("fw", prMarker());
   o.ks("board", PR_BOARD);              /* сторінка «Про пристрій» пише, яка плата */
+  o.ks("repo", PR_REPO);                /* звідки випуски — у кожної плати свій репозиторій */
   bool sta = WiFi.status() == WL_CONNECTED;
   o.ks("ip", sta ? WiFi.localIP().toString().c_str() : "");
   o.ks("ssid", sta ? WiFi.SSID().c_str() : "");
@@ -632,7 +640,7 @@ void yoWebApiBegin(AsyncWebServer& s){
   });
   s.on("/api/sfx",      HTTP_POST, onSfxDone, onSfxUpload);
   /*  логотипи — прямо з SPIFFS; сторінка додає ?v=<версія>, тож кеш на добу безпечний  */
-  s.serveStatic("/logo/", SPIFFS, "/logo/").setCacheControl("max-age=86400");
+  s.serveStatic("/logo/", SPIFFS, "/logo/").setCacheControl("max-age=86400").setFilter(yoWebHeavyMark);
 }
 
 /*  ---------- головний цикл ---------- */

@@ -98,6 +98,7 @@ void setup() {
   sfx.begin();              /* звуки подій: розділ ресурсів і своя задача виводу */
   if(!YoExtras::wokeForAlarm()) sfx.play(SFX_START);   /* перед будильником — тихо */
   network.begin();
+  yoNetConBegin();            /* консоль налагодження по Wi-Fi (порт 2323): сама чекає мережу */
   if (network.status != CONNECTED && network.status!=SDREADY) {
     netserver.begin();
     initControls();
@@ -144,6 +145,17 @@ uint32_t yoSlowMs = 0;
 /*  Як часто взагалі крутиться цикл: дотик опитується раз на оберт, тож
     рідкий цикл — це і є «тормоза», навіть коли жоден крок не довгий.  */
 uint32_t yoLoopN = 0, yoLoopMax = 0, yoLoopFrom = 0;
+/*  Сумарний час кожного кроку циклу за секунду (aunet друкує, коли звуку вийшло менше, ніж
+    треба): провал 26.10.2026 — у плеєрі цикл пробув 800 мс замість 980, а куди пішли решта
+    200 мс, «найдовший крок» не показував — кожен окремий крок був коротший за 35 мс.  */
+struct YoStepAcc { const char* n; uint32_t us; };
+static YoStepAcc s_stepAcc[24];
+static uint8_t s_stepN = 0;
+static uint8_t yoStepSlot(const char* n){
+  for(uint8_t i = 0; i < s_stepN; i++) if(s_stepAcc[i].n == n) return i;
+  if(s_stepN < 24){ s_stepAcc[s_stepN].n = n; s_stepAcc[s_stepN].us = 0; return s_stepN++; }
+  return 23;
+}
 /*  aunet: те саме, але за кожну секунду окремо — щоб провал звуку було з чим зіставити.  */
 static char     yoSecWhat[40] = {0};
 static uint32_t yoSecMs = 0, yoSecLoop = 0, yoSecPlUs = 0;
@@ -173,11 +185,24 @@ static void yoAuNetTick(){
                   (unsigned)(yoI2sWaitUs / 1000), (unsigned)(yoSecPlUs / 1000), (unsigned)yoNetAvMax,
                   (unsigned)yoSecLoop, yoSecWhat[0] ? yoSecWhat : "-", (unsigned)yoSecMs, (int)WiFi.RSSI());
   }
+  if(yoAuNet && t0){
+    /*  звуку за секунду вийшло помітно менше — хто забрав час (кроки понад 15 мс за секунду)  */
+    const uint32_t dt = now - t0;
+    const uint32_t sps = (uint32_t)((uint64_t)(yoAuSamples - s0) * 1000 / (dt ? dt : 1));
+    if(player.getSampleRate() && sps + 1500 < player.getSampleRate()){
+      uint32_t sum = 0;
+      Serial.print("AUNETSTEPS");
+      for(uint8_t i = 0; i < s_stepN; i++){ sum += s_stepAcc[i].us; if(s_stepAcc[i].us > 15000) Serial.printf(" | %s %u мс", s_stepAcc[i].n, (unsigned)(s_stepAcc[i].us / 1000)); }
+      Serial.printf(" | поза кроками %d мс\n", (int)dt - (int)(sum / 1000));
+    }
+  }
+  for(uint8_t i = 0; i < s_stepN; i++) s_stepAcc[i].us = 0;
   yoNetRx = 0; yoNetAvMax = 0; yoI2sWaitUs = 0; s0 = yoAuSamples; u0 = yoAuUnderN;
   yoSecMs = 0; yoSecWhat[0] = 0; yoSecLoop = 0; yoSecPlUs = 0;
   t0 = now;
 }
-  #define STEP(call) { uint32_t _t0 = millis(); call; yoSlow(#call, _t0); }
+  #define STEP(call) { static uint8_t _slot = 255; if(_slot == 255) _slot = yoStepSlot(#call); \
+                       uint32_t _t0 = millis(), _u0 = micros(); call; yoSlow(#call, _t0); s_stepAcc[_slot].us += micros() - _u0; }
 #else
   #define STEP(call) call
 #endif

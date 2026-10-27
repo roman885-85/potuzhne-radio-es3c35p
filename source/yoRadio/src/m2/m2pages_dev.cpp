@@ -53,7 +53,7 @@ static Item s_devItems[] = {
     char m[48]; snprintf(m, sizeof(m), tr("шукаю для %u станцій"), (unsigned)logos.batchTotal());
     M.toast(m);
   }),
-  iNote([](){ static char b[64];
+  iNote([](){ static char b[128];
     if(logos.batchOn()) snprintf(b, sizeof(b), tr("іде: %u з %u, знайдено %u"), (unsigned)logos.batchDone(), (unsigned)logos.batchTotal(), (unsigned)logos.batchFound());
     else snprintf(b, sizeof(b), "%s", "для всіх станцій списку, у тлі, по одній");
     return (const char*)b; }, 22),
@@ -66,8 +66,14 @@ static Item s_devItems[] = {
   iNote([](){ return "для станцій, де минулого разу не знайшлося"; }, 22),
   iSection("СЕНСОР"),
   iButton("Калібрування сенсора", IC_HAND, [](){ M.calibStart(); }),
-  iNote([](){ return "якщо дотик б'є мимо: торкніться чотирьох позначок по кутах"; }, 22),
+  iNote([](){ return "якщо дотик б'є мимо:\nторкніться чотирьох позначок по кутах"; }, 36),
   iButton("Скинути калібрування", IC_RESTART, [](){ M.calibReset(); }),
+  iSection("НАЛАГОДЖЕННЯ"),
+  iSwitch("Консоль по Wi-Fi", IC_CODE, C_TEAL, [](){ return (int32_t)!extras.s.noNetCon; }, [](int32_t v){ extras.s.noNetCon = !v; extras.changed(); }),
+  iNote([](){ static char b[64]; char ip[16];
+    if(!extras.s.noNetCon && yoNetConPeer(ip, sizeof(ip))) snprintf(b, sizeof(b), tr("під'єднано: %s"), ip);
+    else snprintf(b, sizeof(b), "%s", tr("порт 2323, лише з вашої мережі"));
+    return (const char*)b; }, 22),
 };
 static ListPage s_dev("Розробник", s_devItems, sizeof(s_devItems) / sizeof(s_devItems[0]));
 Page& pgDev = s_dev;

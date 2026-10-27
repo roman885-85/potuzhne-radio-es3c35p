@@ -580,4 +580,8 @@ The connection tables are located here https://github.com/e2002/yoradio#connecti
   #define BUFLEN                    170
 #endif
 
+/*  Консоль налагодження по Wi-Fi: Serial у всьому коді радіо йде ще й у мережу
+    (extras/yoNetCon.h підміняє Serial своїм «трійником»).  */
+#include "../extras/yoNetCon.h"
+
 #endif

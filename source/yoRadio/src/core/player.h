@@ -44,7 +44,7 @@ class Player: public Audio {
     volatile uint32_t _seekTo = 0, _seekAt = 0;   /* куди просили перемотати і коли */
     volatile uint32_t _cPos = 0, _cSize = 0, _cTime = 0, _cDur = 0, _cFill = 0, _cAt = 0;
     void _stop(bool alreadyStopped = false, bool keepAmp = false);
-    void _fadeOutWait();                /* звук грає — спершу плавно стишити */
+    void _fadeOutWait(uint16_t ms = 300);   /* звук грає — спершу плавно стишити */
     void _play(uint16_t stationId);
     void _loadVol(uint8_t volume);
     bool _hasError;

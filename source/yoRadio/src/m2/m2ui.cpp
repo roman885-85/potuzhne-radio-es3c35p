@@ -1180,7 +1180,7 @@ void Menu::_drawCalib(Gfx& g){
   if(s_cal.step < 4) calibTarget(g, uiL(CAL_TX[s_cal.step]), uiL(CAL_TY[s_cal.step]), C_ACC);
   /*  підказка по центру  */
   g.text(SW / 2, SH / 2 - 14, "Калібрування сенсора", F_TITLE, C_TXT, AL_C);
-  char b[40];
+  char b[64];
   snprintf(b, sizeof(b), tr("Торкніться позначки  %u/4"), (unsigned)(s_cal.step < 4 ? s_cal.step + 1 : 4));
   g.text(SW / 2, SH / 2 + 12, b, F_ROW, C_TXT2, AL_C);
   if(s_cal.err) g.text(SW / 2, SH / 2 + 34, "Торкайтесь точно центру позначки", F_SMB, C_ACC, AL_C);

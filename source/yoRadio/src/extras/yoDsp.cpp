@@ -602,7 +602,7 @@ void YoDsp::roomTick(){
     }
     memcpy(e.eqRoom, _rtBest, EQ_BANDS);
     _rtAfter = _rtBestSpread;
-    char m[48];
+    char m[96];
     if(_rtBestSpread <= _rtBefore - 1.0f){
       e.eqRoomOn = 1;
       snprintf(m, sizeof(m), m2::tr("рівніше: %.1f -> %.1f дБ"), _rtBefore, _rtBestSpread);

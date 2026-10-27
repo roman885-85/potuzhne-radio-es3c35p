@@ -42,6 +42,10 @@ class MyNetwork {
         спробу, з якої вийшли не кнопкою, закриває сам loop() за 20 с.  */
     volatile bool tryHeld = false;
     void dump();                     /* відладка: стан повернення в мережу */
+    /*  Запасна адреса: з точкою з'єдналися, а роутер не дає адреси (DHCP мовчить) — радіо бере
+        свою минулу адресу в цій мережі (якщо її ніхто не зайняв). Див. _dhcpFallback.  */
+    bool dhcpSilent() const { return _assocAt && !_fbOn && millis() - _assocAt > 10000; }
+    bool dhcpFallbackOn() const { return _fbOn; }
     static void skipBootWifi();      /* відладка: наступний старт — наче жодної мережі поруч */
   private:
     uint32_t _reAt = 0;              /* час наступної спроби */
@@ -62,6 +66,12 @@ class MyNetwork {
     void     _staUp();               /* мережа з'явилась на ходу: підняти служби */
     void _noNetwork();               /* мережі немає: чекаємо, доки людина вибере */
     static void WiFiLostConnection(WiFiEvent_t event, WiFiEventInfo_t info);
+    static void WiFiAssoc(WiFiEvent_t event, WiFiEventInfo_t info);
+    volatile uint32_t _assocAt = 0; /* коли з'єднались із точкою (адреси ще нема); 0 — ні */
+    bool     _fbOn = false;          /* працюємо на своїй минулій адресі: DHCP мовчав */
+    bool     _fbTried = false;       /* на цьому з'єднанні запасну вже пробували */
+    void     _dhcpFallback();        /* DHCP мовчить 10 с — узяти минулу адресу */
+    void     _dhcpBack();            /* перед новою спробою — знову DHCP */
     static void WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info);
 };
 

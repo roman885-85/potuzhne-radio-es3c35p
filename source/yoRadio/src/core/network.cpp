@@ -6,6 +6,10 @@
 #include "../extras/yoExtras.h"
 #include <esp_wifi.h>
 #include "lwip/tcpip.h"
+#include "lwip/etharp.h"
+#include "esp_netif.h"
+#include "esp_netif_net_stack.h"
+#include <Preferences.h>
 #include "display.h"
 #include "config.h"
 #include "telnet.h"
@@ -59,10 +63,119 @@ static void dnsWarm(){
   Serial.printf("##WIFI#\tкеш DNS підготовлено за %u мс\n", (unsigned)(millis() - t0));
 }
 
+/*  ---------- запасна адреса, коли DHCP мовчить ----------
+    27.10.2026 роутер (Keenetic, mesh) перестав давати радіо адресу: з точкою радіо
+    з'єднувалось за 3 с, а відповіді DHCP не було й за 90 с — і радіо лишалось без мережі,
+    хоча з адресою вручну все працювало. Тепер радіо пам'ятає останню адресу в кожній
+    мережі (запис у флеш — лише коли вона змінилась) і, якщо DHCP мовчить 10 с, бере її —
+    коли ніхто інший на неї не відгукнувся (запит ARP). Кожна нова спроба — знову з DHCP.  */
+struct NetMem { uint32_t crc, ip, mask, gw, dns; };
+static NetMem s_mem[6];
+static bool s_memLoaded = false;
+static uint32_t memCrc(const char* s){
+  uint32_t c = 0xFFFFFFFF;
+  for(; *s; s++){ c ^= (uint8_t)*s; for(uint8_t k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320 & (0 - (c & 1))); }
+  return ~c;
+}
+static void memLoad(){
+  if(s_memLoaded) return;
+  s_memLoaded = true;
+  memset(s_mem, 0, sizeof(s_mem));
+  Preferences p;
+  if(p.begin("yonet", true)){ if(p.getBytesLength("mem") == sizeof(s_mem)) p.getBytes("mem", s_mem, sizeof(s_mem)); p.end(); }
+}
+static const NetMem* memGet(const char* ssid){
+  memLoad();
+  const uint32_t c = memCrc(ssid);
+  for(const NetMem& m : s_mem) if(m.crc == c && m.ip) return &m;
+  return nullptr;
+}
+static void memPut(const char* ssid, uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns){
+  if(!ssid[0] || !ip || !gw) return;
+  memLoad();
+  const uint32_t c = memCrc(ssid);
+  NetMem* slot = nullptr;
+  for(NetMem& m : s_mem) if(m.crc == c){ slot = &m; break; }
+  if(slot && slot->ip == ip && slot->mask == mask && slot->gw == gw && slot->dns == dns) return;   /* те саме — флеш не чіпаємо */
+  if(!slot){ for(NetMem& m : s_mem) if(!m.crc){ slot = &m; break; } }
+  if(!slot){ memmove(&s_mem[0], &s_mem[1], sizeof(s_mem) - sizeof(NetMem)); slot = &s_mem[5]; }   /* найстаріша — геть */
+  *slot = { c, ip, mask, gw, dns };
+  Preferences p;
+  if(p.begin("yonet", false)){ p.putBytes("mem", s_mem, sizeof(s_mem)); p.end(); }
+}
+/*  Чи відгукнеться хтось на цю адресу (запит ARP від «0.0.0.0» — як RFC 5227): тоді вона чужа.  */
+static bool ipTaken(uint32_t ip){
+  esp_netif_t* nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+  struct netif* n = nif ? (struct netif*)esp_netif_get_netif_impl(nif) : nullptr;
+  if(!n) return false;
+  ip4_addr_t a; a.addr = ip;
+  for(uint8_t t = 0; t < 2; t++){
+    LOCK_TCPIP_CORE(); etharp_query(n, &a, nullptr); UNLOCK_TCPIP_CORE();
+    for(uint8_t i = 0; i < 6; i++){
+      delay(100);
+      struct eth_addr* e = nullptr; const ip4_addr_t* ipr = nullptr;
+      LOCK_TCPIP_CORE(); const ssize_t k = etharp_find_addr(n, &a, &e, &ipr); UNLOCK_TCPIP_CORE();
+      if(k >= 0) return true;
+    }
+  }
+  return false;
+}
+
+/*  «Остання мережа» — та, до якої справді підключились (за назвою), а не номер спроби в колі:
+    номер бував застарілим (вдала ручна спроба, адреса прийшла пізніше), і першою на старті
+    ставала мережа, якої поруч немає (27.10.2026: my_home).  */
+static void saveLastSsid(){
+  const String cur = WiFi.SSID();
+  for(uint8_t i = 0; i < config.ssidsCount; i++)
+    if(cur == config.ssids[i].ssid){ if(config.store.lastSSID != i + 1) config.setLastSSID(i + 1); return; }
+}
+
+void MyNetwork::_dhcpFallback(){
+  if(!_assocAt || _fbTried || _fbOn || WiFi.status() == WL_CONNECTED) return;
+  if(millis() - _assocAt < 10000) return;
+  _fbTried = true;
+  const String ss = WiFi.SSID();
+  const NetMem* m = memGet(ss.c_str());
+  if(!m){
+    Serial.printf("##WIFI#\t«%s»: з точкою з'єднано, а роутер не дає адреси (DHCP мовчить 10 с); минулої адреси в цій мережі немає — чекаю далі\n", ss.c_str());
+    return;
+  }
+  const IPAddress ip(m->ip), gw(m->gw), mask(m->mask), dns(m->dns ? m->dns : m->gw);
+  if(ipTaken(m->ip)){
+    Serial.printf("##WIFI#\t«%s»: DHCP мовчить, а минула адреса %s уже в когось іншого — чекаю DHCP далі\n", ss.c_str(), ip.toString().c_str());
+    return;
+  }
+  _fbOn = true;
+  Serial.printf("##WIFI#\t«%s»: роутер не дає адреси (DHCP мовчить 10 с) — беру свою минулу %s (шлюз %s)\n",
+                ss.c_str(), ip.toString().c_str(), gw.toString().c_str());
+  WiFi.config(ip, gw, mask, dns);
+}
+
+void MyNetwork::_dhcpBack(){
+  _assocAt = 0; _fbTried = false;
+  if(!_fbOn) return;
+  _fbOn = false;
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);   /* наступна спроба — знову з DHCP */
+}
+
+void MyNetwork::WiFiAssoc(WiFiEvent_t event, WiFiEventInfo_t info){
+  /*  Зв'язок із точкою є — далі чекаємо адресу (DHCP). Без цього рядка не видно, на чому
+      саме застрягло: на точці чи на адресі.  */
+  const wifi_event_sta_connected_t& c = info.wifi_sta_connected;
+  network._assocAt = millis() | 1;
+  network._fbTried = false;
+  Serial.printf("##WIFI#\tз'єднано з точкою «%.*s» %02X:%02X:%02X:%02X:%02X:%02X, канал %u на %lu мс — чекаю адресу\n",
+                (int)c.ssid_len, (const char*)c.ssid, c.bssid[0], c.bssid[1], c.bssid[2], c.bssid[3], c.bssid[4], c.bssid[5], (unsigned)c.channel,
+                (unsigned long)millis());
+}
+
 void MyNetwork::WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info){
   dnsWarm();                                     /* до того, як потік і служби підуть у мережу */
-  Serial.printf("##WIFI#\tадреса %s%s\n", WiFi.localIP().toString().c_str(),
+  network._assocAt = 0;
+  Serial.printf("##WIFI#\tадреса %s на %lu мс%s%s\n", WiFi.localIP().toString().c_str(), (unsigned long)millis(),
+                network._fbOn ? " (своя минула: DHCP мовчав)" : "",
                 network.lostPlaying ? " — до обриву грало, вмикаю знову" : "");
+  if(!network._fbOn) memPut(WiFi.SSID().c_str(), (uint32_t)WiFi.localIP(), (uint32_t)WiFi.subnetMask(), (uint32_t)WiFi.gatewayIP(), (uint32_t)WiFi.dnsIP(0));
   if(network._try == TRY_RUN) network._try = TRY_OK;
   network.beginReconnect = false;
   network.linkLost = false;
@@ -70,10 +183,8 @@ void MyNetwork::WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info){
   network._reAt = 0;
   /*  Підключились не до тієї, що була: запам'ятовуємо, щоб наступного разу
       радіо починало саме з неї.  */
-  if(network._reCur >= 0){
-    if(config.store.lastSSID != network._reCur + 1) config.setLastSSID(network._reCur + 1);
-    network._reCur = -1;
-  }
+  network._reCur = -1;
+  saveLastSsid();
   player.lockOutput = false;
   delay(100);
   display.putRequest(NEWMODE, PLAYER);
@@ -98,6 +209,15 @@ void MyNetwork::WiFiReconnected(WiFiEvent_t event, WiFiEventInfo_t info){
 
 void MyNetwork::WiFiLostConnection(WiFiEvent_t event, WiFiEventInfo_t info){
   yoDnsWarm = false;
+  network._assocAt = 0;
+  {
+    /*  Кожне відключення — з причиною й точкою (у мережі з кількох точок важливо, яка саме):
+        на старті причини раніше не писалось зовсім, і «не підключається» не було з чого розбирати.  */
+    const wifi_event_sta_disconnected_t& d = info.wifi_sta_disconnected;
+    Serial.printf("##WIFI#	відключено: «%.*s» %02X:%02X:%02X:%02X:%02X:%02X, %d дБм, причина %u (%s)\n",
+                  (int)d.ssid_len, (const char*)d.ssid, d.bssid[0], d.bssid[1], d.bssid[2], d.bssid[3], d.bssid[4], d.bssid[5],
+                  (int)d.rssi, (unsigned)d.reason, WiFi.disconnectReasonName((wifi_err_reason_t)d.reason));
+  }
   /*  Спроба, яку замовила людина: одразу кажемо, чому не вийшло.  */
   if(network._try == TRY_RUN){
     uint8_t r = info.wifi_sta_disconnected.reason;
@@ -170,6 +290,7 @@ bool MyNetwork::wifiBegin(bool silent){
     }
     WiFi.disconnect(true, true); //disconnect & erase internal credentials https://github.com/e2002/yoradio/pull/164/commits/89d8b4450dde99cd7930b84bb14d81dab920b879
     delay(100);
+    _dhcpBack();
     WiFi.begin(config.ssids[ls].ssid, config.ssids[ls].password);
     while (WiFi.status() != WL_CONNECTED) {
       if(!silent) Serial.print(".");
@@ -177,8 +298,15 @@ bool MyNetwork::wifiBegin(bool silent){
       if(REAL_LEDBUILTIN!=255 && !silent) digitalWrite(REAL_LEDBUILTIN, !digitalRead(REAL_LEDBUILTIN));
       errcnt++;
       /*  Мережі просто немає в ефірі або пароль не той — чекати решту восьми
-          секунд нема чого, пробуємо наступну збережену.  */
-      if(errcnt > 6 && (WiFi.status() == WL_NO_SSID_AVAIL || WiFi.status() == WL_CONNECT_FAILED)) errcnt = WIFI_ATTEMPTS + 1;
+          секунд нема чого, пробуємо наступну збережену. Не раніше 6 с: стан «не видно»
+          буває ще від попередньої мережі (її подія приходить запізно), а з'єднання з
+          найсильнішою точкою (повний пошук по каналах) займає ~4 с — його обривало на 3,5 с.  */
+      if(errcnt > 12 && (WiFi.status() == WL_NO_SSID_AVAIL || WiFi.status() == WL_CONNECT_FAILED)) errcnt = WIFI_ATTEMPTS + 1;
+      /*  з точкою вже з'єднались — адресу чекаємо до 16 с, а мовчить DHCP — беремо минулу  */
+      if(_assocAt){
+        _dhcpFallback();
+        if(errcnt > WIFI_ATTEMPTS && millis() - _assocAt < 16000) errcnt = WIFI_ATTEMPTS;
+      }
       if (errcnt > WIFI_ATTEMPTS) {
         errcnt = 0;
         ls++;
@@ -208,6 +336,7 @@ bool MyNetwork::wifiRemembered(){
   wifi_config_t c;
   if(esp_wifi_get_config(WIFI_IF_STA, &c) != ESP_OK || !c.sta.ssid[0]) return false;
   BOOTLOG("wifi list is empty, trying remembered %s", (const char*)c.sta.ssid);
+  _dhcpBack();
   WiFi.begin();
   for(uint8_t i = 0; i < 24 && WiFi.status() != WL_CONNECTED; i++) delay(500);
   if(WiFi.status() != WL_CONNECTED) return false;
@@ -242,10 +371,18 @@ void MyNetwork::begin() {
       і забирає ядро 0 собі. Екран у цей час ледве повзе, а сторожовий
       таймер перезавантажує радіо.  */
   WiFi.setAutoReconnect(false);
+  /*  Підключатись до найсильнішої точки з цією назвою, а не до першої знайденої. Типово
+      ядро шукає «швидко»: канали по черзі, і перша ж точка з потрібною назвою — його. У
+      мережі з кількох точок (mesh Keenetic: канал 2, −68 дБм, і канал 10, −48 дБм) радіо
+      так чіплялось за дальню: прошивка по Wi-Fi йшла 12 КБ/с, а 27.10.2026 після
+      перезапуску воно не змогло підключитись зовсім — дальня точка відмовляла.  */
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   /*  Події підписуємо одразу, а не лише коли мережа знайшлась на старті:
       у режимі точки доступу setWifiParams() не викликався ніколи, і спроба
       підключитись із меню не мала як сказати ні про успіх, ні про відмову —
       просто мовчала до кінця очікування.  */
+  WiFi.onEvent(WiFiAssoc, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(WiFiReconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(WiFiLostConnection, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   _evReady = true;
@@ -394,6 +531,7 @@ void MyNetwork::loop(){
     static uint32_t mAt = 0;
     if(millis() - mAt > 10000){ mAt = millis(); mdnsStart(); }
   }
+  _dhcpFallback();                            /* з точкою з'єднались, а DHCP мовчить 10 с — минула адреса */
   /*  Не покладаємось лише на події: питаємо і сам стан станції.  */
   if(_try == TRY_RUN){
     wl_status_t st = WiFi.status();
@@ -409,7 +547,7 @@ void MyNetwork::loop(){
       Serial.printf("##WIFI#\t%s: мовчить, прошу ще раз (%u)\n", _tryS, (unsigned)_tryAgain);
       WiFi.begin(_tryS, _tryP);
     }
-    else if(millis() - _tryAt > 15000) _try = TRY_FAIL;          /* мовчить — годі чекати */
+    else if(millis() - _tryAt > 15000 && !(_assocAt && millis() - _assocAt < 16000)) _try = TRY_FAIL;   /* мовчить — годі чекати (з точкою з'єднались — ще трохи) */
   }
   if(_try == TRY_OK && status != CONNECTED) _staUp();
   /*  Не вийшло — точку доступу повертаємо, щоб радіо не лишилось без нічого.  */
@@ -449,9 +587,12 @@ void MyNetwork::loop(){
   /*  поки триває пошук мереж, підключатися нема чим: модуль один  */
   if(WiFi.scanComplete() == WIFI_SCAN_RUNNING){ _reAt = millis() + 2000; return; }
   if(config.ssidsCount == 0){ linkLost = false; return; }
+  /*  з точкою вже з'єднались і чекаємо адресу — наступною спробою не перебиваємо  */
+  if(_assocAt && millis() - _assocAt < 16000) return;
   if(_reNext >= config.ssidsCount) _reNext = 0;
   _reCur = _reNext++;
   WiFi.disconnect(false, false);
+  _dhcpBack();
   WiFi.begin(config.ssids[_reCur].ssid, config.ssids[_reCur].password);
   if(_reTry < 200) _reTry++;
   /*  перше коло по всіх збережених — швидко, далі рідше: і батарея, і ефір  */
@@ -515,6 +656,7 @@ void MyNetwork::connectTo(const char* ssid, const char* pass){
   for(uint8_t i = 0; i < 20 && WiFi.scanComplete() == WIFI_SCAN_RUNNING; i++) delay(50);
   WiFi.scanDelete();
   esp_wifi_disconnect();
+  _dhcpBack();
   wl_status_t r = WiFi.begin(_tryS, _tryP);
   Serial.printf("##WIFI#\tспроба підключитись до %s (begin=%d)\n", _tryS, (int)r);
 }
@@ -524,7 +666,8 @@ void MyNetwork::connectTo(const char* ssid, const char* pass){
 void MyNetwork::_staUp(){
   status = CONNECTED;
   linkLost = false; beginReconnect = false; _reTry = 0;
-  if(_reCur >= 0){ if(config.store.lastSSID != _reCur + 1) config.setLastSSID(_reCur + 1); _reCur = -1; }
+  if(_reCur >= 0) _reCur = -1;
+  saveLastSsid();
   Serial.printf("##WIFI#\tу мережі %s, адреса %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
   if(!_staReady){
     _staReady = true;

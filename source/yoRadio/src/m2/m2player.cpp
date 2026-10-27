@@ -28,6 +28,9 @@
 extern DspCore dsp;
 extern float m2SpecDbg[32];
 
+#ifdef YO_DEBUG
+extern volatile bool yoVolTrace;          /* menu/yoDebug.cpp, команда voltrace */
+#endif
 namespace m2 {
 
 Player P;
@@ -694,6 +697,10 @@ void Player::_draw(Gfx& g){
   if(_popup) _drawPopup(g);
 }
 
+/*  p2perf: куди йде час кадру головного екрана (мкс, з минулого виклику команди)  */
+volatile uint32_t p2Frames = 0, p2Strips = 0, p2Px = 0, p2BgUs = 0, p2DrawUs = 0, p2PushUs = 0, p2EndUs = 0, p2MaxUs = 0;
+volatile uint32_t p2Calls = 0, p2PreUs = 0, p2SpecUs = 0, p2LoopGap = 0;
+
 void Player::_flush(){
   uint32_t rows[TROWS];
   portENTER_CRITICAL(&_mux);
@@ -717,6 +724,7 @@ void Player::_flush(){
   uint8_t hi = 0;
   Gfx g;
   _frameT = millis();                       /* одна мить на весь кадр: смуги виходять по черзі, а хвиля не має рватися */
+  const uint32_t uF = micros();
   _rf.on = _ripOn; _rf.rel = _ripRel; _rf.x = _ripX; _rf.y = _ripY; _rf.t0 = _ripT0; _rf.up = _ripUpT;
   g_m2Draw = true;
   lcdBegin();
@@ -738,27 +746,37 @@ void Player::_flush(){
         const int16_t hh = (h - yy0 < step) ? (h - yy0) : step;
         const int16_t ys = y0 + yy0;
         uint16_t* buf = half[hi];
+        const uint32_t u0 = micros();
         /*  тло — готове, із PSRAM  */
         for(int16_t yy = 0; yy < hh; yy++){
           if(_bg) memcpy(buf + (int32_t)yy * w, _bg + (int32_t)(ys + yy) * PSW + x0, (size_t)w * 2);
           else for(int16_t i = 0; i < w; i++) buf[(int32_t)yy * w + i] = C_BG;
         }
+        const uint32_t u1 = micros();
         g.target(buf, x0, ys, w, hh);
         _draw(g);
+        const uint32_t u2 = micros();
         if(lcdPush(x0, ys, w, hh, buf)) hi ^= 1;
+        p2BgUs += u1 - u0; p2DrawUs += u2 - u1; p2PushUs += micros() - u2; p2Strips++; p2Px += (uint32_t)w * hh;
         if(bigRedraw && (++stripN % 2) == 0){ lcdWait(); vTaskDelay(1); }
       }
     }
   }
-  lcdEnd();
+  { const uint32_t uE = micros(); lcdEnd(); const uint32_t uX = micros(); p2EndUs += uX - uE; p2Frames++; if(uX - uF > p2MaxUs) p2MaxUs = uX - uF; }
   g_m2Draw = false;
-  /*  g_m2Frames не рахуємо: головний екран оновлюється постійно (спектр), і задача
-      дисплея без 10-мс сну не пускала задачу простою. Швидкий темп — лише для меню.  */
+  /*  Кадр вийшов — задача екрана наступний оберт робить без 10-мс сну (як у меню: 2 мс, раз на
+      чверть секунди 8 мс). Колись тут кадрів не рахували: головний екран оновлюється постійно
+      (спектр), і без сну задача простою не отримувала часу. Тепер вивід на панель чекає гасіння
+      розгортки семафором (блокуючись), і простій іде саме тоді. З 10-мс сном екран плеєра давав
+      ~23 кадри/с — повзунок гучності й спектр рухались ривками (власник 26.10.2026).  */
+  g_m2Frames++;
 }
 
 void Player::render(){
   if(!_shown) return;
   uint32_t now = millis();
+  const uint32_t uR = micros();
+  { static uint32_t prevR = 0; if(prevR && uR - prevR > p2LoopGap) p2LoopGap = uR - prevR; prevR = uR; }
   if(_logoRetryT && now - _logoRetryT > 4000){ _logoRetryT = 0; _logoKey = 0xFFFFFFFF; }   /* ще раз попросити логотип */
   _loadLogo();
   _loadFav();
@@ -791,19 +809,24 @@ void Player::render(){
     /*  гучність  */
     if((uint32_t)config.store.volume != _sVol){ _sVol = config.store.volume; _mark(0, VOL_Y, SW, VOL_H); }
   }
-  /*  плавна гучність: показане значення наздоганяє ціль (енкодер, веб, мікрофон). Під пальцем
-      — без наздоганяння: смуга йде за пальцем одразу (власник 26.10.2026: «полоска гучності
-      гальмує» — показане відставало на кілька кадрів).  */
-  if(_volDrag >= 0){
-    if(_volShownF != (float)_volDrag){ _volShownF = (float)_volDrag; _mark(0, VOL_Y, SW, VOL_H); }
-  }
-  else{
-    float target = (float)config.store.volume;
+  /*  Плавна гучність — за часом, а не за кадрами: показане значення наздоганяє ціль (палець,
+      веб, мікрофон) зі сталою часу 40 мс. Було 35 % за кадр: за повільних кадрів повзунок
+      відставав від пальця («гальмує»); потім під пальцем рух прибрали зовсім — і пропала
+      анімація (власник 26.10.2026). Тепер стрибок через усю смугу доїжджає за ~0,12 с,
+      а за пальцем, що веде, повзунок відстає не більше ніж на кадр-два.  */
+  {
+    const float target = _volDrag >= 0 ? (float)_volDrag : (float)config.store.volume;
+    const uint32_t dt = now - _volAnimT;
+    _volAnimT = now;
     if(_volShownF < 0) _volShownF = target;
     if(fabsf(target - _volShownF) > 0.5f){
-      _volShownF += (target - _volShownF) * 0.35f;
-      if(fabsf(target - _volShownF) <= 0.5f) _volShownF = target;
+      const float k = 1.0f - expf(-(float)(dt > 100 ? 100 : dt) / 40.0f);
+      _volShownF += (target - _volShownF) * k;
+      if(fabsf(target - _volShownF) <= 1.5f) _volShownF = target;
       _mark(0, VOL_Y, SW, VOL_H);
+#ifdef YO_DEBUG
+      if(::yoVolTrace) Serial.printf("VOLANIM %u мс: показано %.1f, ціль %.0f\n", (unsigned)(now % 100000), _volShownF, target);
+#endif
     }
   }
   /*  біжучі рядки  */
@@ -829,6 +852,7 @@ void Player::render(){
   yoSpec.wanted = (_mode() == 0);          /* з картки риски не показуємо — і не рахуємо */
   if(yoSpec.wanted && now - _specT >= 30){
     _specT = now;
+    const uint32_t uS = micros();
     bool playing = player.status() == PLAYING;
     uint16_t vu = playing ? player.get_VUlevel(100) : 0;
     (void)vu;
@@ -842,6 +866,7 @@ void Player::render(){
       if(fabsf(h - _specH[k]) > 0.2f){ _specH[k] = h; moved = true; }
     }
     if(moved && _mode() == 0) _mark(0, ROW_Y, SW, ROW_H);
+    p2SpecUs += micros() - uS;
   }
   /*  риски в картці — ті самі смуги спектра, зведені в п'ять (низи … верхи);
       щойно спектр оновився (раз на 30 мс), а не раз на 90 мс — інакше риски
@@ -881,6 +906,7 @@ void Player::render(){
   static bool wasRip = false;
   if(wasRip && !_ripOn) _mark(MX, CARD_Y, CWID, _cardH());
   wasRip = _ripOn;
+  p2PreUs += micros() - uR; p2Calls++;
   _flush();
 }
 
@@ -997,7 +1023,14 @@ void Player::onRelease(int16_t x, int16_t y){
     else if(_btn == 1){ if(sm) sermons.playRel(1); else player.next(); }
     else if(_seek >= 0){
       uint32_t dur = player.durSec();
-      if(dur){ if(sm) player.burlSeek((uint32_t)(_seek * dur)); else player.setAudioPlayPosition((uint16_t)(_seek * dur)); }
+      /*  Файл картки — через чергу плеєра (Player::seekTo): перемотка мусить статись у головному
+          циклі між кроками декодування. Раніше setAudioPlayPosition кликали просто з задачі
+          екрана — посеред декодування, звідси сміття й клацання на перемотці.  */
+      if(dur){
+        if(sm) player.burlSeek((uint32_t)(_seek * dur));
+        else if(player.sd_max > player.sd_min) player.seekTo(player.sd_min + (uint32_t)((uint64_t)(player.sd_max - player.sd_min) * _seek));
+        else player.setAudioPlayPosition((uint16_t)(_seek * dur));
+      }
     }
     _btn = -1; _seek = -1; _mark(0, ROW_Y, SW, ROW_H);
     return;

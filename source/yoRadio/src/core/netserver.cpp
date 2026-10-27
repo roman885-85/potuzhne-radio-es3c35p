@@ -52,6 +52,7 @@ AsyncWebSocket websocket("/ws");
 void handleUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
 void handleIndex(AsyncWebServerRequest * request);
 void handleNotFound(AsyncWebServerRequest * request);
+bool yoWebHeavyMark(AsyncWebServerRequest*);   /* extras/yoWebApi.cpp: позначка «веб-сервер віддає файл» */
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
 
 bool  shouldReboot  = false;
@@ -96,7 +97,7 @@ bool NetServer::begin(bool quiet) {
 
   /*  Не рік, а перевірка щоразу: інакше після оновлення сторінок браузер ще
       рік показував би старі — зі старим значком і старими назвами.  */
-  webserver.serveStatic("/", SPIFFS, "/www/").setCacheControl("no-store");
+  webserver.serveStatic("/", SPIFFS, "/www/").setCacheControl("no-store").setFilter(yoWebHeavyMark);
 #ifdef CORS_DEBUG
   DefaultHeaders::Instance().addHeader(F("Access-Control-Allow-Origin"), F("*"));
   DefaultHeaders::Instance().addHeader(F("Access-Control-Allow-Headers"), F("content-type"));
@@ -496,9 +497,36 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
       freeSpace = 0;
     }
   }else if(request->url()=="/update"){
+    /*  Мітка плати в самому образі («POTUZHNE-RADIO-FW|ES3C35P|…», extras/yoVersion.cpp): прошивка
+        для іншої плати керувала б не тими виводами, а без USB її вже не виправити. Сторінка
+        перевіряє файл сама, але прошивають і без неї (firmware/flash.sh --wifi) — тож і тут:
+        мітку шукаємо потоком по всіх шматках, без своєї — Update.abort().  */
+    static const char MK[] = "POTUZHNE-RADIO-FW|";
+    static uint8_t mk = 0, bl = 0; static char brd[16]; static bool inBrd = false, brdOk = false, brdBad = false, isFw = true, wasPlay = false;
+    if (!index) { mk = 0; bl = 0; inBrd = false; brdOk = false; brdBad = false; }
+    for(size_t i = 0; i < len; i++){
+      const char c = (char)data[i];
+      if(inBrd){
+        /*  мітка — лише «назва плати|» з літер, цифр і «-»; інакше це не мітка (у самій прошивці
+            є ще й рядок-зразок MK отут, а за ним — інші байти)  */
+        if(c == '|' && bl){ brd[bl] = 0; inBrd = false; if(!strcmp(brd, PR_BOARD)) brdOk = true; else brdBad = true; }
+        else if(isalnum((unsigned char)c) || c == '-' || c == '_'){ if(bl < sizeof(brd) - 1) brd[bl++] = c; else inBrd = false; }
+        else inBrd = false;
+        continue;
+      }
+      if(c == MK[mk]){ if(++mk == sizeof(MK) - 1){ mk = 0; inBrd = true; bl = 0; } }
+      else mk = (c == MK[0]) ? 1 : 0;
+    }
     if (!index) {
-      int target = (request->getParam("updatetarget", true)->value() == "spiffs") ? U_SPIFFS : U_FLASH;
+      /*  без поля updatetarget (curl, скрипт) — прошивка; раніше тут було розіменування нуля  */
+      AsyncWebParameter* tp = request->getParam("updatetarget", true);
+      int target = (tp && tp->value() == "spiffs") ? U_SPIFFS : U_FLASH;
+      isFw = target == U_FLASH;                 /* образ файлової системи мітки не має — його не перевіряємо */
       Serial.printf("Update Start: %s\n", filename.c_str());
+      /*  як у yoOta: зупинка без скидання «автостарту» — грало до оновлення, заграє й після
+          (раніше після прошивки по Wi-Fi радіо мовчало, доки не ввімкнуть рукою)  */
+      wasPlay = player.isRunning();
+      player.lockOutput = true;
       player.sendCommand({PR_STOP, 0});
       display.putRequest(NEWMODE, UPDATING);
       if (!Update.begin(UPDATE_SIZE_UNKNOWN, target)) {
@@ -513,10 +541,17 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
       }
     }
     if (final) {
-      if (Update.end(true)) {
+      if (isFw && (!brdOk || brdBad)) {
+        Serial.printf("Update: прошивка не для цієї плати (%s) — не ставлю\n", brdBad ? brd : "без мітки");
+        Update.abort();                         /* відповідь — у POST /update: shouldReboot = false, текст помилки */
+        player.lockOutput = false;
+        if(wasPlay) player.sendCommand({PR_PLAY, (uint16_t)config.lastStation()});   /* не вийшло — грає далі, як грало */
+      } else if (Update.end(true)) {
         Serial.printf("Update Success: %uB\n", index + len);
       } else {
         Update.printError(Serial);
+        player.lockOutput = false;
+        if(wasPlay) player.sendCommand({PR_PLAY, (uint16_t)config.lastStation()});
         request->send(200, "text/html", updateError());
       }
     }

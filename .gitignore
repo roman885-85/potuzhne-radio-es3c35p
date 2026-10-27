@@ -31,6 +31,8 @@ apps/android-client/build/
 
 # Інструменти: знімки екрана з перевірок і зібраний конвертер шрифтів
 tools/*.png
+# адреса свого радіо для консолі по Wi-Fi (tools/es3c35p/con.py --net)
+tools/es3c35p/.radio
 tools/cp1251fontconvert
 
 # Робочий журнал — лише локально

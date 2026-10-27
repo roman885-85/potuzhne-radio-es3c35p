@@ -520,7 +520,8 @@ void YoExtras::_alarmWakeLoop(uint32_t now){
   const int32_t passed = _alarmPassedSecs();
   if(passed >= 0 && passed < 600 && (s_alarmTestAt || _lastAlarmKey != s.alarmH * 60 + s.alarmM)){
     /*  прокинулись пізніше, ніж треба (годинник у сні відстав) — дзвонимо одразу  */
-    Serial.println("##ALARM#\tпрокинувся після часу будильника — дзвоню");
+    if(passed < 5) Serial.println("##ALARM#\tчас будильника — дзвоню");
+    else Serial.printf("##ALARM#\tпрокинувся на %ld с пізніше за будильник — дзвоню\n", (long)passed);
     if(!s_alarmTestAt) _lastAlarmKey = s.alarmH * 60 + s.alarmM;
     s_alarmTestAt = 0;
     s_alarmQuiet = false;
@@ -666,7 +667,7 @@ void YoExtras::alarmNow(){ _alarmStart(); }
 
 void YoExtras::alarmTestOff(uint16_t sec){
   s_alarmTestAt = (int64_t)time(nullptr) + sec;
-  Serial.printf("##ALARM#\tперевірка: вимикаюсь, «будильник» через %u с\n", (unsigned)sec);
+  Serial.printf("##ALARM#\tперевірка: вимикаюсь, «будильник» через %u с (на %lld)\n", (unsigned)sec, (long long)s_alarmTestAt);
   requestPower(2);
 }
 
@@ -769,7 +770,7 @@ void YoExtras::_lowBatLoop(uint32_t now){
   sfx.test(SFX_LOWBAT);
   Serial.printf("##POWER#\tбатарея сідає: %d%%, %u мВ\n", batPct(), (unsigned)_batMv);
 #ifdef USE_YOMENU
-  if(m2::M.active()){ char b[64]; snprintf(b, sizeof(b), "батарея %d%% — під'єднайте зарядку", batPct()); m2::M.toast(b); }
+  if(m2::M.active()){ char b[96]; snprintf(b, sizeof(b), "батарея %d%% — під'єднайте зарядку", batPct()); m2::M.toast(b); }
 #endif
 }
 
@@ -811,6 +812,7 @@ void YoExtras::pwmSet(uint16_t v){
 #if BRIGHTNESS_PIN!=255
   analogWrite(BRIGHTNESS_PIN, v);
 #endif
+  if(millis() < 12000 && v != _pwmCur) Serial.printf("##DSP#\tпідсвітка %u на %u мс\n", (unsigned)v, (unsigned)millis());   /* старт: коли засвічується екран */
   _pwmCur = v;
 }
 

@@ -225,8 +225,15 @@ void Player::loop() {
             задачі, що попросила. setFilePos скидає буфер і стан декодера
             (MP3/FLAC), і поки це робила задача веб-сервера, головний цикл у
             той самий час декодував із тих самих буферів: звук спотикався, а
-            від частих перемоток радіо зависало й сторож його перезавантажував.  */
-        if(isRunning() && requestP.payload > 0) setFilePos((uint32_t)requestP.payload);
+            від частих перемоток радіо зависало й сторож його перезавантажував.
+            Стрибок посеред хвилі — ще й клацання (власник 26.10.2026: «при перемотці
+            музики з картки — клацання»): 40 мс униз, перемотка, 80 мс угору.  */
+        if(isRunning() && requestP.payload > 0){
+          extern volatile bool yoSeekFade;
+          if(yoSeekFade) _fadeOutWait(40);
+          setFilePos((uint32_t)requestP.payload);
+          if(yoSeekFade) yoDsp.fadeIn(80);
+        }
         break;
       }
       case PR_BURL: {
@@ -305,11 +312,11 @@ uint32_t Player::shownFilePos(){
 /*  Перемикання й зупинка — через затихання: звук ще 0,3 с грає, стишуючись,
     і лише тоді обривається. Новий потік (станція, трек, проповідь) наростає
     за 0,7 с від першого відліку.  */
-void Player::_fadeOutWait(){
+void Player::_fadeOutWait(uint16_t ms){
   if(_status != PLAYING || (!isRunning() && !extOn)) return;
-  yoDsp.fadeOut(300);
+  yoDsp.fadeOut(ms);
   uint32_t t0 = millis();
-  while(!yoDsp.faded() && millis() - t0 < 500){ if(extOn) _extPump(); else Audio::loop(); vTaskDelay(1); }
+  while(!yoDsp.faded() && millis() - t0 < (uint32_t)ms + 200){ if(extOn) _extPump(); else Audio::loop(); vTaskDelay(1); }
 }
 
 /*  ---------- AirPlay ----------

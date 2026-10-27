@@ -37,7 +37,7 @@ class WifiPage : public Page {
 };
 
 void WifiPage::draw(Gfx& g){
-  char b[64];
+  char b[128];
   /*  поточна мережа  */
   if(g.visible(MX, 4, CWID, 54)){
     bool up = WB::staUp();

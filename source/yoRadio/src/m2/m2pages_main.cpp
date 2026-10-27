@@ -243,7 +243,7 @@ void PultPage::tap(int16_t id, int16_t x, int16_t y){
       uint16_t m = extras.sleepMinutes(), nx = 15;
       for(uint8_t i = 0; i < 5; i++) if(SLEEP_MIN[i] == m){ nx = SLEEP_MIN[(i + 1) % 5]; break; }
       extras.setSleep(nx);
-      char b[40];
+      char b[64];
       if(nx) snprintf(b, sizeof(b), tr("таймер сну: %u хв"), nx); else snprintf(b, sizeof(b), "таймер сну вимкнено");
       M.toast(b);
       break; }
@@ -299,7 +299,7 @@ static const char* vUpd(){
   if(ota.installing()) return "іде…";
   if(ota.available()){ snprintf(b, sizeof(b), tr("є %s"), ota.latest()); return b; }
   if(ota.state() == OTA_CHECKING) return "перевіряю…";
-  return ota.latest()[0] ? "остання" : "";
+  return ota.latest()[0] ? (ota.hasFile() ? "остання" : "немає випусків") : "";
 }
 
 /*  Назви мов навмисно не перекладаються: кожна написана сама собою, щоб її
@@ -448,7 +448,7 @@ static const char* vAlarmNote(){
   return b;
 }
 static const char* vSleepNote(){
-  static char b[40];
+  static char b[80];
   uint16_t sm = extras.sleepMinutes();
   if(!sm) snprintf(b, sizeof(b), "таймер вимкнено");
   else { uint32_t s = extras.sleepLeftSec(); snprintf(b, sizeof(b), tr("радіо замовкне через %u:%02u"), (unsigned)(s / 60), (unsigned)(s % 60)); }
@@ -554,7 +554,7 @@ class FavPage : public Page {
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override;
     void tap(int16_t id, int16_t x, int16_t y) override;
     bool hold(int16_t id) override;
-    int16_t height() override { return 4 + 2 * 78 + 50 + 8; }
+    int16_t height() override { return 4 + 2 * 78 + 50 + 8 + 16; }   /* підказка внизу — у два рядки */
   private:
     uint16_t* _logo[FAV_N] = { nullptr };
     bool _logoOk[FAV_N] = { false };
@@ -634,7 +634,8 @@ void FavPage::draw(Gfx& g){
     g.text(MX + 14, y + 26, "Показувати на головному", F_ROW, C_TXT, AL_L, CWID - 80);
     drawSwitch(g, MX + CWID - 52, y + 10, extras.s.favHide ? 0 : 1);
   }
-  g.text(SW / 2, y + 62, "торкніться порожньої — додати станцію, що грає; утримайте — прибрати", F_SM, C_TXT2, AL_C, CWID);
+  g.text(SW / 2, y + 62, "торкніться порожньої — додати станцію, що грає;", F_SM, C_TXT2, AL_C, CWID);
+  g.text(SW / 2, y + 77, "утримайте — прибрати", F_SM, C_TXT2, AL_C, CWID);
 }
 
 void FavPage::tick(uint32_t now){

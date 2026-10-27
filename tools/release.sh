@@ -13,13 +13,16 @@
 #   1. перевіряє, що зібрана прошивка — саме цієї версії;
 #   2. пушить main і створює чернетку випуску v<версія>;
 #   3. завантажує файли (з повторами: GitHub інколи відповідає 502 і лишає чернетку):
-#      PotuzhneRadio-ES3C28P-update.bin — за ним ідуть радіо;
-#      PotuzhneRadio-ES3C28P-app.js.gz, -app.css.gz — сторінка радіо (теж для радіо);
-#      PotuzhneRadio-ES3C28P-full.bin, PotuzhneRadio-web.zip — для прошивання вручну;
+#      PotuzhneRadio-$B-update.bin — за ним ідуть радіо;
+#      PotuzhneRadio-$B-app.js.gz, -app.css.gz — сторінка радіо (теж для радіо);
+#      PotuzhneRadio-$B-full.bin, PotuzhneRadio-web.zip — для прошивання вручну;
 #      програми (Android, Windows, збирачі) — з попереднього випуску; Mac — з Програми/, якщо зібрана під цю версію;
 #   4. публікує (Latest або попередній) і звіряє завантажений update.bin із зібраним.
 set -e
-REPO="roman885-85/potuzhne-radio"
+#  Ця тека — ES3C35P: свій репозиторій і свої файли (ES3C28P випускається з основного
+#  проєкту, github.com/roman885-85/potuzhne-radio).
+B="ES3C35P"
+REPO="roman885-85/potuzhne-radio-es3c35p"
 
 if [ "$1" = "--promote" ]; then
   TAG="v$2"
@@ -38,12 +41,12 @@ FW="$ROOT/firmware"
 TAG="v$VER"
 [ -n "$VER" ] && [ -f "$NOTES" ] || { echo "використання: tools/release.sh <версія> <файл з описом> [--beta]"; exit 1; }
 [ "$(tr -d ' \n\r' < "$FW/VERSION")" = "$VER" ] || { echo "firmware/VERSION не $VER"; exit 1; }
-grep -a -q "POTUZHNE-RADIO-FW|ES3C28P|$VER|" "$FW/PotuzhneRadio-ES3C28P-update.bin" || { echo "update.bin зібрано не для $VER — спершу firmware/rebuild.sh"; exit 1; }
+grep -a -q "POTUZHNE-RADIO-FW|$B|$VER|" "$FW/PotuzhneRadio-$B-update.bin" || { echo "update.bin зібрано не для $VER — спершу firmware/rebuild.sh"; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-cp "$FW/PotuzhneRadio-ES3C28P-update.bin" "$FW/PotuzhneRadio-ES3C28P-full.bin" "$TMP/"
-cp "$FW/web/app.js.gz"  "$TMP/PotuzhneRadio-ES3C28P-app.js.gz"
-cp "$FW/web/app.css.gz" "$TMP/PotuzhneRadio-ES3C28P-app.css.gz"
+cp "$FW/PotuzhneRadio-$B-update.bin" "$FW/PotuzhneRadio-$B-full.bin" "$TMP/"
+cp "$FW/web/app.js.gz"  "$TMP/PotuzhneRadio-$B-app.js.gz"
+cp "$FW/web/app.css.gz" "$TMP/PotuzhneRadio-$B-app.css.gz"
 (cd "$FW/web" && zip -q -j "$TMP/PotuzhneRadio-web.zip" app.js.gz app.css.gz)
 
 # програми — з попереднього Latest (не змінювались)
@@ -108,7 +111,7 @@ PY
 echo ">>> версії програм: $(cat "$MAN" | tr -d '\n ')"
 
 echo ">>> push main"
-git -C "$ROOT" push origin main
+git -C "$ROOT" push origin HEAD:main
 
 if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
   echo ">>> чернетка $TAG"
@@ -130,5 +133,5 @@ else
   LATEST="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
   [ "$LATEST" = "$TAG" ] || { echo "releases/latest показує $LATEST, а не $TAG"; exit 1; }
 fi
-gh release download "$TAG" -R "$REPO" -p PotuzhneRadio-ES3C28P-update.bin -D "$TMP/check"
-cmp "$TMP/check/PotuzhneRadio-ES3C28P-update.bin" "$FW/PotuzhneRadio-ES3C28P-update.bin" && echo ">>> $TAG опубліковано${BETA:+ (попередній)}, прошивка на GitHub збігається із зібраною"
+gh release download "$TAG" -R "$REPO" -p PotuzhneRadio-$B-update.bin -D "$TMP/check"
+cmp "$TMP/check/PotuzhneRadio-$B-update.bin" "$FW/PotuzhneRadio-$B-update.bin" && echo ">>> $TAG опубліковано${BETA:+ (попередній)}, прошивка на GitHub збігається із зібраною"

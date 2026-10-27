@@ -13,7 +13,11 @@
 
 YoOta ota;
 
-static const char* const REPO = "roman885-85/potuzhne-radio";
+/*  Репозиторій — свій для кожної плати (PR_REPO у myoptions.h): ES3C35P має окремий.  */
+#ifndef PR_REPO
+  #define PR_REPO "roman885-85/potuzhne-radio"
+#endif
+static const char* const REPO = PR_REPO;
 /*  Прошивка — своя для кожної плати (PR_BOARD у myoptions.h). Сторінка радіо
     однакова для обох, тож її файли лишились під старою назвою.  */
 static const char* const A_FW  = "PotuzhneRadio-" PR_BOARD "-update.bin";
@@ -149,6 +153,7 @@ bool YoOta::_doCheck(){
   {
     WiFiClientSecure cli; cli.setInsecure();
     HTTPClient http;
+    http.useHTTP10(true);                         /* без відповіді частинами (chunked): потік читаємо сирим */
     http.setTimeout(8000); http.setConnectTimeout(8000);
     char url[160];
     if(_beta) snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases?per_page=3", REPO);
@@ -231,6 +236,7 @@ static uint8_t* fetchSmall(const char* url, size_t& len, char* err, size_t errCa
   if(!buf){ strlcpy(err, "не вистачило пам'яті", errCap); return nullptr; }
   WiFiClientSecure cli; cli.setInsecure();
   HTTPClient http;
+  http.useHTTP10(true);                         /* без відповіді частинами (chunked): потік читаємо сирим */
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(10000); http.setConnectTimeout(10000);
   if(!http.begin(cli, url)){ free(buf); strlcpy(err, "не вдалося звернутися до GitHub", errCap); return nullptr; }
@@ -276,6 +282,7 @@ bool YoOta::_doInstall(){
   if(chunk){
     WiFiClientSecure cli; cli.setInsecure();
     HTTPClient http;
+    http.useHTTP10(true);                         /* без відповіді частинами (chunked): потік читаємо сирим */
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setTimeout(15000); http.setConnectTimeout(10000);
     if(!http.begin(cli, _urlFw)) _fail("не вдалося звернутися до GitHub");

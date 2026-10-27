@@ -22,6 +22,9 @@
 volatile uint32_t yoAuUnderN = 0, yoAuUnderMs = 0, yoAuMinFill = 0xFFFFFFFF;   /* audiostat */
 volatile uint32_t yoAuSamples = 0;                                              /* aunet: відліків віддано */
 volatile uint32_t yoNetRx = 0, yoNetAvMax = 0, yoI2sWaitUs = 0;                 /* aunet: з мережі, найбільше available(), чекання I2S */
+volatile uint32_t yoClickMax = 0;                                               /* clk: найбільший стрибок між сусідніми відліками на виході */
+volatile bool     yoSeekFade = true;                                            /* seekfade: затихання навколо перемотки (для порівняння) */
+volatile uint32_t yoNetFreezeUntil = 0;                                         /* netfreeze: з'єднання «мертве» до нового (перевірка) */
 volatile bool yoAuLog = true;
 
 /*  Вивід у I2S пачками. Бібліотека віддавала драйверу кожен відлік окремим
@@ -3270,7 +3273,7 @@ void Audio::processWebStream() {
     static uint32_t byteCounter;                                // count received data
     static uint32_t chunksize;                                  // chunkcount read from stream
     static uint32_t tmr_1s;                                     // timer 1 sec
-    static uint32_t loopCnt;                                    // count loops if clientbuffer is empty
+    static uint32_t noDataT;                                    // з якої миті з мережі нічого не приходить (0 — приходить)
     static size_t   audioDataCount;                             // counts the decoded audiodata only
 
     // first call, set some values to default - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3282,7 +3285,8 @@ void Audio::processWebStream() {
         byteCounter = 0;
         chunksize = 0;
         bytesDecoded = 0;
-        loopCnt = 0;
+        noDataT = 0;
+        yoNetFreezeUntil = 0;                                   // нове з'єднання — «завмирання» (netfreeze) скінчилось
         audioDataCount = 0;
         tmr_1s = millis();
         m_t0 = millis();
@@ -3322,12 +3326,22 @@ void Audio::processWebStream() {
         }
     }
 
+    /*  Заголовок шматка (chunked) чи блок метаданих (назва пісні) ще не дочитані — з мережі звук
+        не беремо, але те, що вже в буфері, грає далі. Раніше тут був вихід із функції ще до
+        розшифровки: чекали байтів метаданих, а 130 КБ звуку в буфері мовчали — і пакет, що
+        запізнився на 100–300 мс, ставав провалом звуку (прогін 26.10.2026: 8 провалів по
+        116–150 мс і 2 паузи по 300 мс за 30 хв при повному буфері).  */
+    bool skipFill = false;
+    if(yoNetFreezeUntil){             /* netfreeze N: з'єднання «завмерло» (до N с або до нового з'єднання) — як мережа, що осіла */
+        if((int32_t)(yoNetFreezeUntil - millis()) > 0){ availableBytes = 0; skipFill = true; }
+        else yoNetFreezeUntil = 0;
+    }
+
     // if we have chunked data transfer: get the chunksize- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_chunked && !m_chunkcount && availableBytes) { // Expecting a new chunkcount?
         int b;
         b = _client->read();
-
-        if(b == '\r') return;
+        skipFill = true;
         if(b == '\n'){
             m_chunkcount = chunksize;
             chunksize = 0;
@@ -3336,24 +3350,24 @@ void Audio::processWebStream() {
                 m_streamType = ST_WEBFILE;
                 m_f_chunked = false;
             }
-            return;
         }
-        // We have received a hexadecimal character.  Decode it and add to the result.
-        b = toupper(b) - '0';                       // Be sure we have uppercase
-        if(b > 9) b = b - 7;                        // Translate A..F to 10..15
-        chunksize = (chunksize << 4) + b;
-        return;
+        else if(b != '\r' && b >= 0){
+            // We have received a hexadecimal character.  Decode it and add to the result.
+            b = toupper(b) - '0';                       // Be sure we have uppercase
+            if(b > 9) b = b - 7;                        // Translate A..F to 10..15
+            chunksize = (chunksize << 4) + b;
+        }
     }
 
     // if we have metadata: get them - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    if(!m_metacount && !m_f_swm){
+    if(!skipFill && !m_metacount && !m_f_swm){
         int bytes = 0;
         int res = 0;
         if(m_f_chunked) bytes = min(m_chunkcount, availableBytes);
         else bytes = availableBytes;
         res = readMetadata(bytes);
         if(m_f_chunked) m_chunkcount -= res;
-        if(!m_metacount) return;
+        if(!m_metacount) skipFill = true;
     }
 
     // if the buffer is often almost empty issue a warning  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -3368,16 +3382,21 @@ void Audio::processWebStream() {
     }
 
     // if the buffer can't filled for several seconds try a new connection  - - - - - - - - - - - - - - - - - - - - - -
-    if(f_stream && !availableBytes && !f_webFileAudioComplete){
-        loopCnt++;
-        if(loopCnt > 200000) {              // wait several seconds
-            loopCnt = 0;
+    /*  «Кілька секунд» тут рахувались обертами циклу (200 000), а цикл радіо повільний (екран, обробка) —
+        виходило 20–35 с тиші вже після того, як буфер спорожнів (27.10.2026: двічі по 34 с, коли мережа
+        на хвилину осіла). Тепер за часом: з мережі нічого ≥ 4 с, і звуку в буфері майже не лишилось, —
+        нове з'єднання. Поки в буфері є запас, він догравається: короткі заминки сервера звук не рвуть.
+        Файл, що вже прийшов увесь, не перепідключаємо.  */
+    if(f_stream && !availableBytes && !f_webFileDataComplete && !f_webFileAudioComplete){
+        if(!noDataT) noDataT = millis() | 1;
+        if(millis() - noDataT > 4000 && InBuff.bufferFilled() < 4 * maxFrameSize) {
+            noDataT = 0;
             AUDIO_INFO("Stream lost -> try new connection");
             connecttohost(m_lastHost);
             return;
         }
     }
-    if(availableBytes) loopCnt = 0;
+    if(availableBytes) noDataT = 0;
 
     // buffer fill routine  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(true) { // statement has no effect
@@ -3388,7 +3407,7 @@ void Audio::processWebStream() {
             40 КБ/с — кожна нерівність мережі ставала провалом звуку. Межі метаданих і шматків
             (chunked) не переступаємо: їх розбирає наступний виклик.  */
         uint32_t got = 0;
-        for(uint8_t pass = 0; pass < 24 && got < 16384; pass++){
+        for(uint8_t pass = 0; !skipFill && pass < 24 && got < 16384; pass++){
             uint32_t bytesCanBeWritten = InBuff.writeSpace();
             if(!m_f_swm)    bytesCanBeWritten = min(m_metacount,  bytesCanBeWritten);
             if(m_f_chunked) bytesCanBeWritten = min(m_chunkcount, bytesCanBeWritten);
@@ -3569,7 +3588,7 @@ void Audio::processWebStreamTS() {
     static int      bytesDecoded;
     static uint32_t byteCounter;                                // count received data
     static uint32_t tmr_1s;                                     // timer 1 sec
-    static uint32_t loopCnt;                                    // count loops if clientbuffer is empty
+    static uint32_t noDataT;                                    // з якої миті з мережі нічого не приходить (0 — приходить)
     static uint8_t  ts_packet[188];                             // m3u8 transport stream is 188 bytes long
     uint8_t         ts_packetStart = 0;
     uint8_t         ts_packetLength = 0;
@@ -3584,7 +3603,7 @@ void Audio::processWebStreamTS() {
         byteCounter = 0;
         bytesDecoded = 0;
         chunkSize = 0;
-        loopCnt = 0;
+        noDataT = 0;
         tmr_1s = millis();
         m_t0 = millis();
         ts_packetPtr = 0;
@@ -3662,16 +3681,17 @@ void Audio::processWebStreamTS() {
     }
 
     // if the buffer can't filled for several seconds try a new connection  - - - - - - - - - - - - - - - - - - - - - -
+    /*  за часом, а не обертами циклу — див. processWebStream  */
     if(f_stream && !availableBytes){
-        loopCnt++;
-        if(loopCnt > 200000) {              // wait several seconds
-            loopCnt = 0;
+        if(!noDataT) noDataT = millis() | 1;
+        if(millis() - noDataT > 4000 && InBuff.bufferFilled() < 4 * maxFrameSize) {
+            noDataT = 0;
             AUDIO_INFO("Stream lost -> try new connection");
             httpPrint(m_lastHost);
             return;
         }
     }
-    if(availableBytes) loopCnt = 0;
+    if(availableBytes) noDataT = 0;
 
     // buffer fill routine  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(true) { // statement has no effect
@@ -3708,7 +3728,7 @@ void Audio::processWebStreamHLS() {
     static uint32_t byteCounter;                                // count received data
     static size_t   chunkSize = 0;
     static uint32_t tmr_1s;                                     // timer 1 sec
-    static uint32_t loopCnt;                                    // count loops if clientbuffer is empty
+    static uint32_t noDataT;                                    // з якої миті з мережі нічого не приходить (0 — приходить)
     (void)bytesDecoded;
     // first call, set some values to default - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     if(m_f_firstCall) { // runs only ont time per connection, prepare for start
@@ -3716,7 +3736,7 @@ void Audio::processWebStreamHLS() {
         byteCounter = 0;
         bytesDecoded = 0;
         chunkSize = 0;
-        loopCnt = 0;
+        noDataT = 0;
         tmr_1s = millis();
         m_t0 = millis();
          m_f_firstCall = false;
@@ -3760,16 +3780,17 @@ void Audio::processWebStreamHLS() {
     }
 
     // if the buffer can't filled for several seconds try a new connection  - - - - - - - - - - - - - - - - - - - - - -
+    /*  за часом, а не обертами циклу — див. processWebStream  */
     if(f_stream && !availableBytes){
-        loopCnt++;
-        if(loopCnt > 200000) {              // wait several seconds
-            loopCnt = 0;
+        if(!noDataT) noDataT = millis() | 1;
+        if(millis() - noDataT > 4000 && InBuff.bufferFilled() < 4 * maxFrameSize) {
+            noDataT = 0;
             AUDIO_INFO("Stream lost -> try new connection");
             httpPrint(m_lastHost);
             return;
         }
     }
-    if(availableBytes) loopCnt = 0;
+    if(availableBytes) noDataT = 0;
 
     if(InBuff.bufferFilled() > maxFrameSize && !f_stream) {  // waiting for buffer filled
         f_stream = true;  // ready to play the audio data
@@ -4115,7 +4136,10 @@ uint16_t Audio::readMetadata(uint16_t maxBytes, bool first) {
     }
     if(!metalen) {m_metacount = m_metaint; return res;}
 
-    uint16_t a = _client->readBytes(&chbuf[pos_ml], min((uint16_t)(metalen - pos_ml), (uint16_t)(maxBytes -1)));
+    /*  Лише те, що вже прийшло: readBytes чекав решту блоку до таймаута клієнта (секунда),
+        і весь цей час звук не розшифровувався.  */
+    int got = _client->read((uint8_t*)&chbuf[pos_ml], min((uint16_t)(metalen - pos_ml), (uint16_t)(maxBytes > 1 ? maxBytes - 1 : 1)));
+    uint16_t a = got > 0 ? (uint16_t)got : 0;
     res += a;
     pos_ml += a;
     if(pos_ml == metalen) {
@@ -4475,7 +4499,10 @@ int Audio::sendBytes(uint8_t* data, size_t len) {
     }
     if(ret < 0) { // Error, skip the frame...
         if(m_f_Log) if(m_codec == CODEC_M4A){log_i("begin not found"); return 1;}
-        i2s_zero_dma_buffer((i2s_port_t)m_i2s_num);
+        /*  Буфер I2S тут більше не обнуляємо: це обривало звук посеред хвилі — клацання на кожній
+            перемотці картки (після неї декодер MP3 завжди спотикається на кадрі-двох:
+            INVALID_FRAMEHEADER, MAINDATA_UNDERFLOW) і на кожному битому кадрі потоку.
+            Поганий кадр просто пропускаємо; те, що вже в DMA, догравається.  */
         if(!getChannels() && (ret == -2)) {
              ; // suppress errorcode MAINDATA_UNDERFLOW
         }
@@ -5036,6 +5063,12 @@ bool Audio::playSample(int16_t sample[2]) {
     }
     s_ob[s_on++] = s32;
     yoAuSamples++;
+    {   /*  клацання — це різкий стрибок між сусідніми відліками; команда clk показує найбільший  */
+        static int32_t prevL = 0;
+        const int32_t l = (int16_t)(s32 >> 16), d = l > prevL ? l - prevL : prevL - l;
+        prevL = l;
+        if((uint32_t)d > yoClickMax) yoClickMax = (uint32_t)d;
+    }
     if(s_on >= sizeof(s_ob) / sizeof(s_ob[0])) yoOutFlush(m_i2s_num);
     /*  Налагодження (команда audiostat): чи встигає звук. Поки буфер I2S повний, запис
         блокується, і відліки йдуть урівень із годинником. Провал — коли DMA спорожнів: тоді
