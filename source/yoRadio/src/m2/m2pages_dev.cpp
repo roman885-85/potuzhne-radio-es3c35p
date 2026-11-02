@@ -265,10 +265,16 @@ void DacInfoPage::draw(Gfx& g){
     }
     ty = 104;
   }
-  g.text(MX + 2, ty, D[s_dacSel][0], F_SM, C_TXT2, AL_L, CWID);
-  g.text(MX + 2, ty + 14, D[s_dacSel][1], F_SM, C_TXT2, AL_L, CWID);
-  if(extras.s.extMute && s_dacSel >= 1 && s_dacSel <= 3)
-    g.text(MX + 2, ty + 28, "MUTE: " EXT_MUTE_NAME " — до XSMT ЦАП чи входу MUTE підсилювача.", F_SM, C_ORANGE, AL_L, CWID);
+  /*  Підказка про MUTE. З «тихо — низьким» на PCM5102A про нього вже каже другий рядок (XSMT іде на вивід MUTE,
+      а не на 3V3 — підпис не має суперечити таблиці). У PCM5102A сім виводів, і третій рядок упирався в кнопку —
+      підказки не було видно зовсім; тоді вона стає замість першого рядка (опис є й у списку виходів).  */
+  static const char* const MUTE_LINE = "MUTE: " EXT_MUTE_NAME " — до XSMT ЦАП чи входу MUTE підсилювача.";
+  const bool muteNote = extras.s.extMute && s_dacSel >= 1 && s_dacSel <= 3 && pins != alt;
+  const bool line3 = ty + 28 <= 160 - 6;          /* третій рядок вміщається над кнопкою */
+  const bool first = muteNote && !line3;
+  g.text(MX + 2, ty, first ? MUTE_LINE : D[s_dacSel][0], F_SM, first ? C_ORANGE : C_TXT2, AL_L, CWID);
+  g.text(MX + 2, ty + 14, (pins == alt) ? "SCK на GND, XSMT на " EXT_MUTE_NAME " (MUTE)." : D[s_dacSel][1], F_SM, C_TXT2, AL_L, CWID);
+  if(muteNote && line3) g.text(MX + 2, ty + 28, MUTE_LINE, F_SM, C_ORANGE, AL_L, CWID);
   if(s_dacSel == 4){
     g.box(MX, 160, CWID, 36, 12, C_SURF2);
     g.text(SW / 2, 183, "Де ці роз'єми на платі", F_ROWB, C_TXT, AL_C);

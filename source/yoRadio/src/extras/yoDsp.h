@@ -40,6 +40,12 @@ class YoDsp {
     void changed();                              /* налаштування в extras.s змінились (не з задачі звуку) */
     void setRate(uint32_t fs) { if(fs >= 8000 && fs != _fs){ _fs = fs; _reset = true; _dirty = true; } }
     void setVolume(uint8_t vol, int8_t balance);
+    void volMaxChanged() { _dirty = true; }       /* «максимальна гучність» змінилась: задача звуку перерахує підсилення */
+    /*  Замір підсилення (команда gain): суми квадратів на вході й на виході, поки ввімкнено. Відношення не залежить
+        від того, що грає, — різниця двох замірів і є зміною гучності.  */
+    volatile bool meter = false;
+    volatile float mIn = 0, mOut = 0;
+    volatile uint32_t mN = 0;
 
     /*  Один кадр: s — вхід, на виході в s те, що бачить покажчик рівня (до
         гучності, у пів шкали, як і було); повертає кадр для I2S (L<<16 | R).  */
@@ -106,6 +112,7 @@ class YoDsp {
     volatile uint8_t _vol = 64;
     volatile int8_t  _bal = 0;
     volatile float   _gL = 0.25f, _gR = 0.25f;   /* гучність із балансом, пораховані заздалегідь */
+    float _mk = 1.0f;             /* множник «максимальної гучності» (extras.s.volMax), під який пораховано _gL/_gR */
     uint8_t _volCalc = 255;       /* гучність, під яку пораховано тонкомпенсацію */
     float _pre = 0.5f, _preDb = -6.0f;
     volatile float _mxDb = 0;     /* найбільший підйом АЧХ (з поправкою на спад музики вгорі) — для запасу */

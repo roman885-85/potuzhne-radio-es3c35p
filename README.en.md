@@ -59,7 +59,8 @@ The radio's own interface is in Ukrainian or English (Menu › Settings › Lang
   time** switches automatically.
 - **On-air recording** to the card.
 - **Sound:** 10-band equalizer with presets, speaker protection, virtual bass, loudness compensation, balance, room
-  correction measured with the built-in microphone.
+  correction measured with the built-in microphone; maximum volume as a percentage of full (Sound › Processing) —
+  volume at 100 % gives exactly that much, handy with a loud external amplifier.
 - **Microphone:** claps and knocks on the case as commands, room presence.
 - **Wireless speaker:** AirPlay (iPhone, iPad, Mac) and DLNA.
 - **Radio web page** (`http://potuzhne-xxxx.local/`) and apps for Android, Windows, Mac — the same as for ES3C28P.

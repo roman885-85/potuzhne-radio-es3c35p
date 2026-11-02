@@ -274,7 +274,7 @@ static void onState(AsyncWebServerRequest* r){
   /*  звук: еквалайзер і обробка  */
   o.k("snd"); o.put('{');
   o.kn("on", s.eqOn); o.kn("preset", s.eqPreset); o.kn("loud", s.eqLoud); o.kn("guard", s.eqGuard);
-  o.kn("vb", s.vbass); o.kn("roomOn", s.eqRoomOn); o.kn("bal", config.store.balance);
+  o.kn("vb", s.vbass); o.kn("roomOn", s.eqRoomOn); o.kn("bal", config.store.balance); o.kn("vmax", s.volMax);
   o.arr("eq");   for(uint8_t i = 0; i < EQ_BANDS; i++){ o.sep(); o.num(s.eq[i]); }     o.put(']');
   o.arr("room"); for(uint8_t i = 0; i < EQ_BANDS; i++){ o.sep(); o.num(s.eqRoom[i]); } o.put(']');
   o.kn("pre10", (long long)lroundf(yoDsp.preampDb() * 10));
@@ -715,6 +715,7 @@ static void apply(const WebCmd& c){
   else if(!strcmp(k, "eqLoud"))     { s.eqLoud = clampi(v, 0, 2); yoDsp.changed(); }
   else if(!strcmp(k, "eqGuard"))    { s.eqGuard = clampi(v, 0, 2); yoDsp.changed(); }
   else if(!strcmp(k, "vbass"))      { s.vbass = clampi(v, 0, 3); yoDsp.changed(); }
+  else if(!strcmp(k, "volMax"))     { s.volMax = clampi(v, 5, 100); yoDsp.volMaxChanged(); }
   else if(!strcmp(k, "eqRoomOn"))   { s.eqRoomOn = clampi(v, 0, 1); yoDsp.changed(); }
   else if(!strcmp(k, "roomTune"))   { if(!s.micOn){ s.micOn = 1; mic.apply(); } const char* w = yoDsp.roomTuneStart(); if(w) _msg = w; }
   else if(!strcmp(k, "roomStop"))   { mic.sweepAbort(); ext = false; }

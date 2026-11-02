@@ -166,7 +166,16 @@ static const char* vGuardNote(){
   return (extras.s.dac == 0 || extras.s.dac == 3) ? "зрізає низ, який динамік не грає, а хрипить"
                                                   : "ЦАП на лінію: захист не потрібен";
 }
+/*  Максимальна гучність: повзунок гучності на 100 % дає стільки від повної (extras/yoDsp, volMaxK).  */
+static const char* vVolMaxNote(){
+  return extras.s.volMax < 100 ? "повзунок гучності на 100 % дасть стільки від повної —\nдля станцій, картки, AirPlay, будильника й звуків"
+                               : "100 % — без обмеження";
+}
 static Item s_sndItems[] = {
+  iSection("ГУЧНІСТЬ"),
+  iSlider("Максимальна гучність", 5, 100, [](){ return (int32_t)extras.s.volMax; },
+          [](int32_t v){ extras.s.volMax = (uint8_t)v; extras.changed(); yoDsp.volMaxChanged(); }, "%"),
+  iNote(vVolMaxNote, 36),
   iSection("ДИНАМІК"),
   iSeg("Захист динаміка", GUARD_LBL, 3, [](){ return (int32_t)extras.s.eqGuard; }, [](int32_t v){ extras.s.eqGuard = v; sndChanged(); }),
   iNote(vGuardNote, 22),

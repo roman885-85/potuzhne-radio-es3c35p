@@ -1483,6 +1483,10 @@ VIEWS.sound = page => {
   const roomMsg = h('p', { class: 'note' });
   const roomBands = h('div', { class: 'rbands' });
   const ctl = h('div');
+  /*  максимальна гучність: повзунок гучності на 100 % дає стільки від повної (прошивка: extras/yoDsp)  */
+  const vmOut = h('output');
+  let vmT = 0;
+  const vmax = range(5, 100, 100, v => { vmOut.textContent = v + ' %'; clearTimeout(vmT); vmT = setTimeout(() => setx({ volMax: v }), 150); });
   page.append(
     card('Еквалайзер', h('div', { class: 'bar', style: { justifyContent: 'space-between' } }, presets, h('label', { class: 'bar' }, h('span', { class: 'note', style: { margin: 0 } }, 'увімкнено'), on)),
       cv, geq, preNote),
@@ -1496,7 +1500,10 @@ VIEWS.sound = page => {
       h('p', { class: 'note', style: { marginTop: 0 } }, 'Радіо зіграє тони від 63 Гц до 16 кГц і послухає себе своїм мікрофоном. Спершу перевіряє, чи мікрофон і динамік не спотворюють звук (інакше зменшує підсилення чи гучність тонів), тоді ставить поправку й міряє ще раз — уже з нею, доправляючи те, що лишилось. Якщо рівнішим звук не став, поправка не вмикається. Близько хвилини; у кімнаті має бути тихо, грати в цей час нічого не буде.'),
       h('div', { class: 'bar', style: { marginTop: '10px' } }, roomBtn, roomClr), roomBar, roomMsg, roomBands,
       row('Застосовувати поправку', 'бірюзові точки на графіку — що почув мікрофон', roomOn)),
-    card('Гучність', ctl),
+    card('Гучність',
+      h('div', { class: 'fld' }, h('span', null, 'Максимальна гучність'), h('div', { class: 'rng' }, vmax, vmOut)),
+      h('p', { class: 'note' }, 'Гучність на 100 % дасть стільки від повної — для станцій, картки, проповідей, AirPlay і DLNA, будильника й звуків подій; 100 % — без обмеження. Зручно, коли зовнішній підсилювач заголосний: тоді весь хід повзунка припадає на потрібну гучність.'),
+      ctl),
     card('Аудіовихід', h('div', { class: 'bar' }, h('span', { id: 'dacnow', style: { flex: 1 } }), h('a', { class: 'btn sm', href: '#/dev' }, 'Змінити')), h('p', { class: 'note' }, 'Зовнішній ЦАП чи підсилювач під\'єднують у розділі «Розробник» — там і схеми.')));
   send('getcontrols=1'); send('getsystem=1');
   let plotT = 0, last = null;
@@ -1514,6 +1521,7 @@ VIEWS.sound = page => {
       geq.classList.toggle('off', !d.on);
       guard.set(d.guard); vb.set(d.vb); loud.set(d.loud);
       if (!held(bal)) { bal.value = d.bal; fillRange(bal); balOut.textContent = d.bal ? (d.bal < 0 ? 'ліворуч ' + -d.bal : 'праворуч ' + d.bal) : 'по центру'; }
+      if (d.vmax && !held(vmax)) { vmax.value = d.vmax; fillRange(vmax); vmOut.textContent = d.vmax + ' %'; }
       roomOn.firstChild.checked = !!d.roomOn;
       const busy = d.rst === 1 || d.rst === 2;
       roomBtn.lastChild.textContent = busy ? 'Зупинити' : 'Зміряти';
@@ -1811,7 +1819,8 @@ VIEWS.dev = page => {
       const x0 = dacOf(sel);
       /*  MUTE «тихо — низьким» на PCM5102A — це його XSMT: тоді XSMT іде не на 3V3, а на вивід MUTE  */
       const x = (d.amute === 1 && x0.p.some(p => p[1] === 'XSMT'))
-        ? Object.assign({}, x0, { p: x0.p.map(([a, b]) => b === 'XSMT' ? [is35() ? 'RXD0' : 'IO3', 'XSMT'] : [a, b]) })
+        ? Object.assign({}, x0, { p: x0.p.map(([a, b]) => b === 'XSMT' ? [is35() ? 'RXD0' : 'IO3', 'XSMT'] : [a, b]),
+            d: [x0.d[0], x0.d[1].replace('XSMT — на 3,3 В', 'XSMT — на ' + (is35() ? 'RXD0' : 'IO3') + ' (MUTE)')] })
         : x0;
       const det = h('div', { style: { marginTop: '14px' } }, h('p', { style: { margin: '0 0 4px' } }, x.d[0]), h('p', { class: 'note', style: { marginTop: 0 } }, x.d[1]));
       if (x.p.length) {

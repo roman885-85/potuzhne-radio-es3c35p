@@ -117,7 +117,9 @@ int32_t YoSfx::_gainQ15(SfxEvent e){
         гучний. Тепер повзунок працює від 0 до 100.  */
     v = e == SFX_LOWBAT ? ev : v * ev / 100;
   }
-  return (int32_t)(32767UL * v * v / 10000UL);
+  /*  «максимальна гучність» обмежує й звуки подій: інакше звук на 100 % був би гучніший за станцію на повній  */
+  const uint32_t mx = (extras.s.volMax >= 5 && extras.s.volMax < 100) ? extras.s.volMax : 100;
+  return (int32_t)(32767ULL * v * v * mx / 1000000ULL);
 }
 
 const YoSfx::Clip* YoSfx::_get(SfxEvent e){

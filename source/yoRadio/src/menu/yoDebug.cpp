@@ -425,6 +425,18 @@ void yodbgLoop(){
           не міняється. Разом із voltrace видно кожен крок руху.  */
       m2::P.volAnimFrom((float)atoi(buf + 8)); Serial.printf("VOLANIM з %d до %u\n", atoi(buf + 8), (unsigned)config.store.volume);
     }
+    else if(!strncmp(buf,"gain",4) && (buf[4] == 0 || buf[4] == ' ')){
+      /*  gain — скільки звук на виході DSP тихіший за вхід, дБ, з минулого виклику (і почати новий замір);
+          gain 0 — вимкнути замір. Перевірка «максимальної гучності»: різниця двох замірів — саме обмеження.  */
+      if(buf[4] == ' ' && atoi(buf + 5) == 0){ yoDsp.meter = false; Serial.println("GAIN вимкнено"); }
+      else{
+        if(yoDsp.meter && yoDsp.mN && yoDsp.mIn > 0)
+          Serial.printf("GAIN %.2f дБ за %u відліків (гучність %u, обмеження %u %%)\n", 10.0f * log10f(yoDsp.mOut / yoDsp.mIn),
+                        (unsigned)yoDsp.mN, (unsigned)config.store.volume, (unsigned)extras.s.volMax);
+        else Serial.println("GAIN замір пішов");
+        yoDsp.mIn = 0; yoDsp.mOut = 0; yoDsp.mN = 0; yoDsp.meter = true;
+      }
+    }
     else if(!strcmp(buf,"clk")){
       /*  Найбільший стрибок між сусідніми відліками на виході з минулого виклику (і скинути).
           Порівнювати: «clk» → секунда музики → «clk» (тло) → перемотка → «clk» (перехід).  */
@@ -773,7 +785,7 @@ void yodbgLoop(){
     else if(!strncmp(buf,"sfx ",4)){
       /*  sfx <подія або номер> — програти (навіть вимкнену)  */
       int e = YoSfx::find(buf + 4);
-      if(e >= 0){ sfx.test((SfxEvent)e); Serial.printf("SFX %s (%u мс)\n", YoSfx::id((SfxEvent)e), (unsigned)sfx.clipMs((SfxEvent)e)); }
+      if(e >= 0){ sfx.test((SfxEvent)e); Serial.printf("SFX %s (%u мс), підсилення %.2f дБ, обмеження %u %%\n", YoSfx::id((SfxEvent)e), (unsigned)sfx.clipMs((SfxEvent)e), YoSfx::gainDb((SfxEvent)e), (unsigned)extras.s.volMax); }
       else Serial.println("SFX невідома подія");
     }
     else if(!strncmp(buf,"splashdemo",10)){ uint32_t ms = buf[10] == ' ' ? atoi(buf + 11) : 8000; display.splashDemo(ms); Serial.printf("SPLASH %u мс\n", (unsigned)ms); }

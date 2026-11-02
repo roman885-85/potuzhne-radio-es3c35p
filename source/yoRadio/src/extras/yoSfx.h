@@ -39,6 +39,7 @@ class YoSfx {
     uint16_t userMask() const { return _userMask; }   /* біт — є свій файл (запам'ятовано, без звертань до флеш) */
     void     refreshUser();
     uint32_t clipMs(SfxEvent e);          /* тривалість (завантажує, якщо ще ні) */
+    static float gainDb(SfxEvent e){ const int32_t g = _gainQ15(e); return g > 0 ? 20.0f * log10f(g / 32767.0f) : -99.0f; }   /* для консолі */
     static const uint8_t MAX_SEC = 10;    /* найдовший свій звук, с */
 
     /*  Задача звуку, на кожен відлік: s32 — L у старших 16 бітах, R у молодших.  */

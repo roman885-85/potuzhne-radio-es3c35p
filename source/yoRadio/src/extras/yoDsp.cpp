@@ -171,14 +171,25 @@ void YoDsp::changed(){
     частоти регулює гучність». Тепер на повній гучності — як було, нижче — без ослаблення.
     Кличуть _recalc() і setVolume() — обидва з задачі звуку.  */
 void YoDsp::_preUpdate(){
-  const float att = _vol > 0 ? -20.0f * log10f((float)_vol / 254.0f) : 48.0f;
+  /*  запас рахуємо від справжнього підсилення — разом із «максимальною гучністю»  */
+  const float att = _vol > 0 ? -20.0f * log10f((float)_vol / 254.0f * _mk) : 48.0f;
   float extra = _mxDb - 6.0f - att;
   if(extra < 0) extra = 0;
   _preDb = -6.0f - extra;
   _pre = 0.5f * powf(10.0f, -extra / 20.0f);
 }
 
+/*  «Максимальна гучність» (Звук › Обробка, власник 02.11.2026: «у налаштуваннях указується відсоток від максимуму,
+    який буде максимумом для повної гучності»). Множник іде просто в підсилення, а не в число гучності 0..254:
+    так на тихому кінці повзунка кроків лишається стільки ж, скільки й без обмеження. Тонкомпенсація рахує тишу
+    від повзунка — повна гучність, яку задав власник, і є для неї «повною».  */
+static float volMaxK(){
+  const uint8_t m = extras.s.volMax;
+  return (m >= 5 && m < 100) ? m / 100.0f : 1.0f;
+}
+
 void YoDsp::_recalc(){
+  if(volMaxK() != _mk) setVolume(_vol, _bal);   /* обмеження змінили — підсилення під нове */
   const ExtStore& e = extras.s;
   float fs = (float)_fs;
   uint8_t ng = 0;
@@ -225,10 +236,11 @@ void YoDsp::setVolume(uint8_t vol, int8_t balance){
   uint8_t l = 0, r = 0;
   if(balance < 0) l = (uint8_t)(step * (float)(-balance * 16));
   if(balance > 0) r = (uint8_t)(step * (float)(balance * 16));
-  _gL = (float)(vol - l) / 256.0f;
-  _gR = (float)(vol - r) / 256.0f;
-  const bool v = vol != _vol;
-  _vol = vol; _bal = balance;
+  const float mk = volMaxK();
+  _gL = (float)(vol - l) / 256.0f * mk;
+  _gR = (float)(vol - r) / 256.0f * mk;
+  const bool v = vol != _vol || mk != _mk;
+  _vol = vol; _bal = balance; _mk = mk;
   if(v) _preUpdate();
 }
 
@@ -239,6 +251,7 @@ uint32_t YoDsp::process(int16_t s[2]){
 
   const float K = 1.0f / 32768.0f;
   float xl = (float)s[0] * K, xr = (float)s[1] * K;
+  const float inL = xl, inR = xr;               /* для заміру підсилення (meter) */
   float vb = 0;
   if(_vbK > 0){
     float m = 0.5f * (xl + xr);
@@ -299,6 +312,7 @@ uint32_t YoDsp::process(int16_t s[2]){
   _lim = lim;
   xl *= lim; xr *= lim;
 
+  if(__builtin_expect(meter, 0)){ mIn = mIn + inL * inL + inR * inR; mOut = mOut + xl * xl + xr * xr; mN = mN + 1; }
   int32_t ol = (int32_t)(xl * 32767.0f), orr = (int32_t)(xr * 32767.0f);
   if(ol > 32767) ol = 32767; else if(ol < -32768) ol = -32768;
   if(orr > 32767) orr = 32767; else if(orr < -32768) orr = -32768;
