@@ -127,10 +127,12 @@ Then on screen: **Menu › Settings › Developer › Audio output** — "stereo
 
 ### External amplifier MUTE
 
-The radio mutes an external amplifier (or the DAC via its XSMT input) while it is silent: at power-on, after stop, in
-sleep, before a restart or update; it unmutes only while a station, an event sound or a test tone is playing and the
-sound goes to the external DAC. Switching stations does not mute it — so it does not click. The pin is **RXD0 (IO44), connector P2, pin 4**. Setting:
-**Menu › Settings › Developer › Amplifier MUTE (RXD0)** (also on the radio's web page: Developer):
+The radio mutes an external amplifier (or the DAC via its XSMT input) whenever there is no sound: at power-on until
+the first sound, after stop, while a station is switching, connecting and filling its buffer, at volume 0, in sleep,
+before a restart or update. MUTE is released only while sound actually goes to the external DAC (a station, the
+memory card, a sermon, AirPlay or DLNA, an event sound, a test tone) and comes back 0.3 s after the last sound.
+The pin is **RXD0 (IO44), connector P2, pin 4**. Setting: **Menu › Settings › Developer › Amplifier MUTE (RXD0)**
+(also on the radio's web page: Developer):
 
 | Mode | Quiet when | For | Resistor to stay quiet at power-on |
 |---|---|---|---|
@@ -138,7 +140,8 @@ sound goes to the external DAC. Switching stations does not mute it — so it do
 | quiet when low | low level | XSMT on PCM5102A, MUTE on PAM8403 | 10 kΩ from RXD0 to GND |
 | quiet when high | high level | MUTE on TPA3116 | 10 kΩ from RXD0 to 3.3 V |
 
-Until the firmware starts, nothing drives RXD0 (it is a UART input) — the resistor keeps it quiet at power-on. Below
+Until the firmware starts, nothing drives RXD0 (it is a UART input and reads high without a resistor) — the resistor
+keeps it quiet at power-on. Below
 the switch you see the pin's current state: "sound" or "quiet". For PCM5102A in "quiet when low" mode XSMT goes to
 RXD0 (not to 3.3 V) — the wiring diagram on screen and on the web page shows it that way.
 

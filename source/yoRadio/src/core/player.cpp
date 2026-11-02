@@ -273,7 +273,9 @@ void Player::setOutputPins(bool isPlaying) {
   bool _ml = MUTE_LOCK?!MUTE_VAL:(isPlaying?!MUTE_VAL:MUTE_VAL);
   if(extras.s.dac) _ml = MUTE_VAL;       /* звук іде на зовнішній ЦАП — вбудований підсилювач вимкнено */
   if(MUTE_PIN!=255) digitalWrite(MUTE_PIN, _ml);
-  extras.extAmp(MUTE_LOCK || isPlaying);  /* зовнішній — навпаки: звук, лише коли грає саме через нього */
+  /*  зовнішній: зупинка — тихо одразу; знімає MUTE не «грає», а сам звук (extAmpKick з yoOutFlush) —
+      поки з'єднується й набирає буфер, звуку ще немає  */
+  if(!isPlaying && !MUTE_LOCK) extras.extAmp(false);
 }
 
 /*  Перемотка файла картки: у чергу, а показуємо одразу цільову позицію.  */

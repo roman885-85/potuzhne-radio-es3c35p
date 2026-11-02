@@ -179,10 +179,14 @@ class YoExtras {
     bool     onPower() const { return _simChg >= 0 ? _simChg : _power; }
     bool     lowBattery() const { return !s.noBat && _batMv >= 2800 && batPct() >= 0 && batPct() < 10 && !onPower(); }
     void     applyDac();                /* перемкнути виводи I2S на вибраний вихід */
-    /*  MUTE зовнішнього підсилювача (EXT_MUTE_PIN): sound — звук іде (станція, звук події, тон
-        перевірки); тихо — коли радіо мовчить або звук іде не на зовнішній ЦАП. Кличуть там само,
-        де вмикають і глушать вбудований підсилювач (MUTE_PIN).  */
+    /*  MUTE зовнішнього підсилювача (EXT_MUTE_PIN). Власник 02.11.2026: «при зупинці — mute, при
+        будь-яких діях, коли немає звуку, — mute, при ввімкненні, поки не пішов звук, — mute».
+        Тож «звук» — лише поки звук справді йде в I2S: extAmpKick() з виводу плеєра (радіо, картка,
+        проповіді, DLNA, AirPlay — усе через yoOutFlush), звуків подій і тонів мікрофона; звук
+        перестав іти на EXT_HOLD_MS — «тихо» (перемикання станції, з'єднання, набір буфера,
+        провал), зупинка й гучність 0 — «тихо» одразу. extAmp(false) — тихо негайно.  */
     void     extAmp(bool sound);
+    void     extAmpKick(bool fromPlayer);   /* звук іде просто зараз (fromPlayer: з плеєра — тоді й гучність не 0) */
     bool     extAmpOn() const { return _extOn; }   /* зараз «звук» */
     void     extMuteApply();            /* змінили режим — виставити вивід заново (0 — відпустити) */
     uint16_t batRaw();                 /* разове читання, мВ */
@@ -209,6 +213,8 @@ class YoExtras {
 
   private:
     volatile bool _extOn = false;       /* MUTE зовнішнього підсилювача: зараз «звук» */
+    volatile uint32_t _extAt = 0;       /* коли востаннє йшов звук (extAmpKick) */
+    void          _extAmpLoop(uint32_t now);   /* звук не йде EXT_HOLD_MS — тихо */
     bool          _extSet = false;      /* вивід уже виставлено (перший запис — завжди) */
     bool     _dirty = false;
     uint32_t _dirtyMs = 0;

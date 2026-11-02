@@ -273,7 +273,7 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
   const bool extAmp = extras.s.dac != 0 && extras.s.extMute;           /* MUTE зовнішнього підсилювача під'єднано */
   bool wasMuted = (ownAmp && digitalRead(MUTE_PIN) == MUTE_VAL) || (extAmp && !extras.extAmpOn());
   if(ownAmp) digitalWrite(MUTE_PIN, !MUTE_VAL);
-  if(extAmp) extras.extAmp(true);
+  if(extAmp) extras.extAmpKick(false);
   uint32_t rate = player.getSampleRate();
   if(rate < 8000) rate = 44100;
   const size_t FR = 256;
@@ -283,6 +283,7 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
   memset(buf, 0, sizeof(buf));
   while(lead && !player.isRunning()){
     uint32_t n = lead > FR ? FR : lead;
+    if(extAmp) extras.extAmpKick(false);         /* тиша наперед — щоб підсилювач устиг прокинутись */
     i2s_write(I2S_NUM_0, buf, n * 4, &w, pdMS_TO_TICKS(500));
     lead -= n;
   }
@@ -312,6 +313,7 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
       buf[2*k] = buf[2*k + 1] = (int16_t)fx;
       pos += step;
     }
+    if(k && extAmp) extras.extAmpKick(false);
     if(k) i2s_write(I2S_NUM_0, buf, k * 4, &w, pdMS_TO_TICKS(500));
     if(k < FR) break;
   }

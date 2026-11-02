@@ -301,6 +301,32 @@ void YoExtras::extAmp(bool sound){
 #endif
 }
 
+/*  Звук іде просто зараз. Знімаємо MUTE одразу — на першому ж записі в I2S: у DMA ще ~93 мс
+    до того, як цей звук пролунає, підсилювач (чи плавне зняття XSMT) якраз устигає.  */
+#define EXT_HOLD_MS 300                  /* звук не йде стільки — тихо (довше за DMA 93 мс, щоб не зрізати хвіст) */
+void YoExtras::extAmpKick(bool fromPlayer){
+#if EXT_DAC
+  if(!s.extMute || s.dac == 0) return;
+  if(fromPlayer){
+    const int16_t v = player.volOverride >= 0 ? player.volOverride : (int16_t)config.store.volume;
+    if(v <= 0) return;                   /* гучність 0 — звуку немає: хай глушиться */
+  }
+  _extAt = millis() | 1;
+  if(!_extOn) extAmp(true);
+#else
+  (void)fromPlayer;
+#endif
+}
+
+void YoExtras::_extAmpLoop(uint32_t now){
+  if(_extOn && (int32_t)(now - _extAt) > EXT_HOLD_MS) extAmp(false);
+}
+
+/*  Вивід плеєра (Audio.cpp, yoOutFlush): кожна пачка відліків у I2S — «звук іде». Лише поки плеєр
+    справді грає: після зупинки ще встигала проскочити остання пачка, і MUTE знімався на 0,3 с
+    (на платі: тихо → через 6 мс звук → тихо).  */
+void yoAudioOut(){ if(extras.s.extMute && player.status() == PLAYING) extras.extAmpKick(true); }
+
 void YoExtras::extMuteApply(){
 #if EXT_DAC
   if(EXT_MUTE_PIN == 255) return;
@@ -312,7 +338,7 @@ void YoExtras::extMuteApply(){
     return;
   }
   _extSet = false;                                       /* режим змінився — виставити рівень заново */
-  extAmp(player.status() == PLAYING);
+  extAmp(player.status() == PLAYING && millis() - _extAt < EXT_HOLD_MS);
 #endif
 }
 
@@ -337,6 +363,7 @@ void YoExtras::begin(){
 
 void YoExtras::loop(){
   uint32_t now = millis();
+  _extAmpLoop(now);
   _sleepLoop(now);
   _alarmLoop(now);
   _alarmWakeLoop(now);

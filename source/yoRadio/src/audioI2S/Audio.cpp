@@ -35,7 +35,9 @@ volatile bool yoAuLog = true;
     Тепер відліки збираються по 512 (11,6 мс) і йдуть одним викликом.  */
 static uint32_t s_ob[512];
 static uint16_t s_on = 0;
+void yoAudioOut();                     /* extras/yoExtras.cpp: MUTE зовнішнього підсилювача — «звук іде» */
 static void yoOutFlush(uint8_t port){
+    yoAudioOut();
     const size_t len = (size_t)s_on * 4;
     size_t off = 0;
     while(off < len){

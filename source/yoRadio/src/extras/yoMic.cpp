@@ -698,6 +698,7 @@ void YoMic::_sweep(int16_t* raw){
         }
       }
       size_t w = 0, got = 0;
+      if(_swAmp) extras.extAmpKick(false);
       i2s_write(I2S_NUM_0, out, k * 4, &w, pdMS_TO_TICKS(300));
       { YoI2sGuard lk; i2s_read(I2S_NUM_0, raw, k * 4, &got, pdMS_TO_TICKS(300)); }
       for(size_t j = 0; j < got / 4; j++){
@@ -729,7 +730,7 @@ void YoMic::_sweep(int16_t* raw){
   const UBaseType_t prioWas = uxTaskPriorityGet(nullptr);
   vTaskPrioritySet(nullptr, 6);
   if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, _swAmp ? !MUTE_VAL : MUTE_VAL);  /* підсилювач */
-  extras.extAmp(_swAmp);                                                         /* і зовнішній, якщо звук іде на нього */
+  if(_swAmp) extras.extAmpKick(false); else extras.extAmp(false);               /* і зовнішній, якщо звук іде на нього */
   /*  Фора буферу передачі. Далі запис і читання йдуть у лок-степі (записали
       кадр — стільки ж прочитали), тож без фори буфер передачі весь час на нулі:
       будь-яка затримка планувальника рве тон на шматки по 6 мс, і на слух це
@@ -740,6 +741,7 @@ void YoMic::_sweep(int16_t* raw){
     const size_t prime = (size_t)(fs * 8 / 100) / FR;
     for(size_t i = 0; i < prime && !_swStop; i++){
       size_t w = 0;
+      if(_swAmp) extras.extAmpKick(false);
       i2s_write(I2S_NUM_0, out, FR * 4, &w, pdMS_TO_TICKS(300));
     }
   }
@@ -881,7 +883,7 @@ const char* YoMic::simStart(uint8_t kind, uint8_t count, uint16_t gapMs){
   if(count > 6) count = 6;
   _tsCount = count; _tsGap = gapMs < 60 ? 60 : gapMs; _tsPos = 0;
   if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, !MUTE_VAL);
-  extras.extAmp(true);
+  extras.extAmpKick(false);
   _tsKind = kind >= 2 ? 3 : kind ? 2 : 1;
   return nullptr;
 }
@@ -982,6 +984,7 @@ void YoMic::_simChunk(int16_t* buf){
   }
   /*  лише записане рахується: відкинуті кадри раніше «з'їдали» наступний удар  */
   size_t w = 0;
+  extras.extAmpKick(false);
   i2s_write(I2S_NUM_0, buf, FR * 4, &w, pdMS_TO_TICKS(600));
   _tsPos += w / 4;
   if(_tsPos >= total){
