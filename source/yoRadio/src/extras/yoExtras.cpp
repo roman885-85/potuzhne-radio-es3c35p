@@ -107,7 +107,8 @@ void YoExtras::_load(){
   if(s.eqGuard > 2) s.eqGuard = 1;
   if(s.vbass > 3) s.vbass = 0;
   if(s.lang >= m2::LANG_N) s.lang = m2::LANG_UK;
-  if(s.dacPwr > 2) s.dacPwr = 0;
+  s.dacPwrOld = 0;                       /* ключ живлення модуля прибрано (02.11.2026): вивід тепер MUTE */
+  if(s.extMute > 2) s.extMute = 0;
   /*  Літній час (26.10.2026, прохання власника): типово — сам, за правилом Європи, а пояс
       у налаштуваннях тепер зимовий. Хто влітку ставив +3 (Київ), отримує +2 і далі
       перехід сам: улітку однаково +3, узимку — +2, як і має бути.  */
@@ -119,7 +120,7 @@ void YoExtras::_load(){
   }
   if(s.dstMode > 1) s.dstMode = 0;
 #if !EXT_DAC
-  s.dac = 0; s.dacPwr = 0;              /* на цій платі зовнішнього ЦАП немає */
+  s.dac = 0; s.extMute = 0;             /* на цій платі зовнішнього ЦАП немає */
 #endif
   m2::langSet(s.lang);                   /* мова екрана — до першого малювання */
   config.applyTz();                      /* пояс із літнім часом — щойно відомий режим */
@@ -256,20 +257,6 @@ void YoExtras::applyDac(){
   player.setOutputPins(player.status() == PLAYING);
   return;
 #endif
-  /*  Живлення подаємо ПЕРШИМ і даємо модулю отямитись: інакше такти підуть у
-      ще мертву мікросхему й вона може не піднятись.  */
-  if(s.dacPwr){
-    /*  Яким рівнем ключ відкривається — залежить від того, який транзистор
-        поставили: 1 — високим (P-канальний через NPN, комутує 5 В),
-        2 — низьким (один P-канальний, витік на 3,3 В, затвор прямо на IO3).  */
-    const bool want = s.dac != 0;
-    const bool lvl  = (s.dacPwr == 2) ? !want : want;
-    gpio_hold_dis((gpio_num_t)DAC_PWR);
-    pinMode(DAC_PWR, OUTPUT);
-    const bool was = digitalRead(DAC_PWR);
-    digitalWrite(DAC_PWR, lvl ? HIGH : LOW);
-    if(want && lvl != was) delay(60);            /* дати модулю піднятись */
-  }
   if(s.dac){
     player.setPinout(DAC_BCLK, DAC_LRC, DAC_DOUT, I2S_PIN_NO_CHANGE, I2S_PIN_NO_CHANGE);
     /*  Відв'язуємо лінію даних вбудованого кодека: перепризначення виводів не
@@ -291,18 +278,47 @@ void YoExtras::applyDac(){
       digitalWrite(DP[i], LOW);
     }
   }
-  /*  Дослідне живлення модуля з виводу IO3. Вивід віддає до ~40 мА — цього
-      вистачає PCM5102A і UDA1334A, але не підсилювачу MAX98357A: йому потрібен
-      окремий ключ. Сенс у тому, що при вимкненні радіо модуль гасне разом із
-      ним, а не світиться від постійної шини 3,3 В (вона мусить лишатись під
-      напругою, бо на ній живе годинник і сенсор, який будить радіо).  */
-  player.setOutputPins(player.status() == PLAYING);
-  Serial.printf("##DAC#\tаудіовихід %u, живлення з " DAC_PWR_NAME ": %u\n", s.dac, s.dacPwr);
+  player.setOutputPins(player.status() == PLAYING);   /* вбудований підсилювач і MUTE зовнішнього */
+  Serial.printf("##DAC#\tаудіовихід %u, MUTE підсилювача на " EXT_MUTE_NAME ": %u\n", s.dac, s.extMute);
+}
+
+/*  MUTE зовнішнього підсилювача (чи вхід XSMT ЦАП) на EXT_MUTE_PIN. «Звук» — лише коли звук
+    справді йде на зовнішній ЦАП; інакше, і поки радіо мовчить, — «тихо». До запуску прошивки
+    вивід ніхто не веде (він вхід UART), тому «тихо» на старті тримає резистор 10 кОм: на GND
+    для режиму «тихо — низьким», на 3,3 В для «тихо — високим».  */
+void YoExtras::extAmp(bool sound){
+#if EXT_DAC
+  if(!s.extMute || EXT_MUTE_PIN == 255) return;
+  const bool on = sound && s.dac != 0;
+  if(_extSet && on == _extOn) return;
+  _extOn = on;
+  if(!_extSet){ pinMode(EXT_MUTE_PIN, OUTPUT); _extSet = true; }
+  const bool lvl = (s.extMute == 1) ? on : !on;          /* 1: тихо — низьким (звук = високий); 2: тихо — високим */
+  digitalWrite(EXT_MUTE_PIN, lvl ? HIGH : LOW);
+  Serial.printf("##AMP#\tзовнішній підсилювач: %s (" EXT_MUTE_NAME " = %d) на %lu мс\n", on ? "звук" : "тихо", lvl ? 1 : 0, (unsigned long)millis());
+#else
+  (void)sound;
+#endif
+}
+
+void YoExtras::extMuteApply(){
+#if EXT_DAC
+  if(EXT_MUTE_PIN == 255) return;
+  gpio_hold_dis((gpio_num_t)EXT_MUTE_PIN);
+  if(!s.extMute){
+    pinMode(EXT_MUTE_PIN, INPUT);                        /* вимкнено — вивід не ведемо зовсім */
+    _extSet = false; _extOn = false;
+    Serial.println("##AMP#\tMUTE зовнішнього підсилювача вимкнено — " EXT_MUTE_NAME " відпущено");
+    return;
+  }
+  _extSet = false;                                       /* режим змінився — виставити рівень заново */
+  extAmp(player.status() == PLAYING);
+#endif
 }
 
 /*  Перед будь-яким перезапуском (меню, оновлення, сторож, сторінка) — записати відкладені
     налаштування: під час звуку їх тримаємо до тиші (див. Config::eepromLoop).  */
-static void yoShutdownSave(){ config.commitNow(); extras.saveNow(); }
+static void yoShutdownSave(){ extras.extAmp(false); config.commitNow(); extras.saveNow(); }   /* зовнішній підсилювач — тихо до перезапуску */
 
 void YoExtras::begin(){
   esp_register_shutdown_handler(yoShutdownSave);
@@ -412,13 +428,11 @@ void YoExtras::_powerOff(){
       gpio_hold_en((gpio_num_t)SP[i]);
     }
   }
-  /*  Ключ живлення модуля — саме ВИМИКАЮЧИМ рівнем: при схемі «вмикає
-      низьким» нуль тримав би модуль увімкненим усю ніч.  */
-  if(s.dacPwr){
-    gpio_hold_dis((gpio_num_t)DAC_PWR);
-    pinMode(DAC_PWR, OUTPUT);
-    digitalWrite(DAC_PWR, s.dacPwr == 2 ? HIGH : LOW);
-    gpio_hold_en((gpio_num_t)DAC_PWR);
+  /*  MUTE зовнішнього підсилювача — у «тихо» й зафіксувати на весь сон (і рівень залежить від
+      режиму: при «тихо — високим» нуль якраз увімкнув би підсилювач на всю ніч).  */
+  if(s.extMute && EXT_MUTE_PIN != 255){
+    extAmp(false);
+    gpio_hold_en((gpio_num_t)EXT_MUTE_PIN);
   }
   gpio_deep_sleep_hold_en();
 
@@ -565,7 +579,7 @@ void YoExtras::earlyBoot(){
   /*  Виводи звуку теж були зафіксовані в нулі (щоб уві сні не живили
       зовнішній модуль) — відпускаємо, інакше радіо прокинулось би німим.  */
   {
-    static const uint8_t SP[8] = { DAC_BCLK, DAC_LRC, DAC_DOUT, I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_MCLK, DAC_PWR };
+    static const uint8_t SP[8] = { DAC_BCLK, DAC_LRC, DAC_DOUT, I2S_BCLK, I2S_LRC, I2S_DOUT, I2S_MCLK, EXT_MUTE_PIN };
     for(uint8_t i = 0; i < 8; i++) if(SP[i] != 255) gpio_hold_dis((gpio_num_t)SP[i]);
   }
   if(s_wokeTouch) rtc_gpio_deinit((gpio_num_t)TS_INT);

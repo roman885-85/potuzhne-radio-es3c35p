@@ -94,7 +94,7 @@
 /*  Зовнішній ЦАП I2S (PCM5100 / PCM5102A, UDA1334A, MAX98357A) — на штатних
     роз'ємах 4P 1,25 мм на звороті плати (схема ES3C35P, «外部接口»):
       Expand (P3): 1 — 3V3, 2 — GND, 3 — IO46 → LCK, 4 — IO45 → BCK;
-      UART   (P2): 1 — +5 В → VIN, 2 — GND, 3 — TXD0 (IO43) → DIN, 4 — RXD0 (IO44) — ключ живлення.
+      UART   (P2): 1 — +5 В → VIN, 2 — GND, 3 — TXD0 (IO43) → DIN, 4 — RXD0 (IO44) — MUTE підсилювача.
     Виводи ES3C28P (2, 3, 14, 21) тут зайняті карткою, екраном і звуком.
     IO45/IO46 — стапи завантаження (за замовчуванням у нулі), модулю PCM51xx це
     не заважає: його входи без підтяжок. Власник, 25.10.2026: «к штатным
@@ -103,8 +103,10 @@
 #define DAC_BCLK          45
 #define DAC_LRC           46
 #define DAC_DOUT          43
-#define DAC_PWR           44
-#define DAC_PWR_NAME      "RXD0"
+/*  MUTE зовнішнього підсилювача (чи вхід XSMT ЦАП) — RXD0, роз'єм P2, контакт 4. До 02.11.2026 тут був
+    дослідний ключ живлення модуля; вивід віддано під MUTE (прохання власника).  */
+#define EXT_MUTE_PIN      44
+#define EXT_MUTE_NAME     "RXD0"
 
 /*  ----------  ПРОЧЕЕ  ------------------------------------------------------ */
 #define L10N_LANGUAGE     RU
@@ -123,12 +125,12 @@
 #define DSP_H             240
 #define EXT_LED_PIN       42        /* WS2812 */
 #define EXT_BAT_PIN       9         /* TP4054, дільник 1:2 */
-#define EXT_DAC           1         /* зовнішній ЦАП на роз'ємі Expand (GPIO 14/21/2, живлення IO3) */
+#define EXT_DAC           1         /* зовнішній ЦАП на роз'ємі Expand (GPIO 14/21/2, MUTE підсилювача — IO3) */
 #define DAC_BCLK          14
 #define DAC_LRC           21
 #define DAC_DOUT          2
-#define DAC_PWR           3
-#define DAC_PWR_NAME      "IO3"
+#define EXT_MUTE_PIN      3
+#define EXT_MUTE_NAME     "IO3"
 
 
 /*  ----------  ДИСПЛЕЙ  ILI9341V 240x320 (работает в ландшафте 320x240)  ----- */

@@ -87,32 +87,33 @@ struct ExtStore {
   int16_t  tsCalXL, tsCalXR, tsCalYT, tsCalYB;   /* калібрування сенсора: виміряні екранні координати чотирьох позначок */
   uint8_t  tsCalInit;                            /* 1 — калібрування вже виставлено (типово — тотожне) */
   uint8_t  lang;                                 /* мова екрана: 0 українська, 1 English (m2/m2lang) */
-  uint8_t  dacPwr;                               /* дослід, ключ живлення модуля на IO3: 0 вимк, 1 вмикає високим, 2 вмикає низьким */
+  uint8_t  dacPwrOld;                            /* не вживається з 02.11.2026 (був дослідний ключ живлення модуля); поле лишається, щоб не зсунути збережене */
   uint8_t  dstMode;                              /* літній час: 0 вимк, 1 сам, за правилом Європи (пояс у налаштуваннях — зимовий) */
   uint8_t  dstInit;                              /* 1 — літній час уже виставлено (перехід зі старого «пояс +3 влітку») */
   uint8_t  noNetCon;                             /* 1 — консоль налагодження по Wi-Fi вимкнена (0 — увімкнена, extras/yoNetCon) */
+  uint8_t  extMute;                              /* MUTE зовнішнього підсилювача на EXT_MUTE_PIN: 0 — вивід не чіпаємо,
+                                                    1 — тихо низьким рівнем (XSMT, PAM8403), 2 — тихо високим (TPA3116) */
 };
 /*  Зовнішній ЦАП I2S — на вільні виводи роз'ємів; які саме — у myoptions.h для
-    кожної плати (ES3C28P: 14/21/2, ключ IO3; ES3C35P: 45/46/43, ключ RXD0/IO44).  */
+    кожної плати (ES3C28P: 14/21/2, MUTE IO3; ES3C35P: 45/46/43, MUTE RXD0/IO44).  */
 #if EXT_DAC
   #ifndef DAC_BCLK
     #define DAC_BCLK  14
     #define DAC_LRC   21
     #define DAC_DOUT  2
   #endif
-  /*  Дослідне живлення модуля (ключ): на ES3C28P — єдиний вільний вивід роз'єму
-      розширення, та ще й з RTC-області — його можна тримати в нулі під час сну.  */
-  #ifndef DAC_PWR
-    #define DAC_PWR   3
+  /*  MUTE зовнішнього підсилювача: на ES3C28P — єдиний вільний вивід роз'єму розширення.  */
+  #ifndef EXT_MUTE_PIN
+    #define EXT_MUTE_PIN   3
   #endif
 #else
   #define DAC_BCLK  255
   #define DAC_LRC   255
   #define DAC_DOUT  255
-  #define DAC_PWR   255
+  #define EXT_MUTE_PIN   255
 #endif
-#ifndef DAC_PWR_NAME
-  #define DAC_PWR_NAME "IO3"
+#ifndef EXT_MUTE_NAME
+  #define EXT_MUTE_NAME "IO3"
 #endif
 #define EXT_STORE_V1  10                          /* розмір першої версії — щоб не губити старі налаштування */
 
@@ -178,6 +179,12 @@ class YoExtras {
     bool     onPower() const { return _simChg >= 0 ? _simChg : _power; }
     bool     lowBattery() const { return !s.noBat && _batMv >= 2800 && batPct() >= 0 && batPct() < 10 && !onPower(); }
     void     applyDac();                /* перемкнути виводи I2S на вибраний вихід */
+    /*  MUTE зовнішнього підсилювача (EXT_MUTE_PIN): sound — звук іде (станція, звук події, тон
+        перевірки); тихо — коли радіо мовчить або звук іде не на зовнішній ЦАП. Кличуть там само,
+        де вмикають і глушать вбудований підсилювач (MUTE_PIN).  */
+    void     extAmp(bool sound);
+    bool     extAmpOn() const { return _extOn; }   /* зараз «звук» */
+    void     extMuteApply();            /* змінили режим — виставити вивід заново (0 — відпустити) */
     uint16_t batRaw();                 /* разове читання, мВ */
     void     batSim(int8_t pct, int8_t chg);   /* перевірка: підставити рівень, -1 — справжній */
 
@@ -201,6 +208,8 @@ class YoExtras {
     char     wifiFail[33] = {0};         /* не вдалося підключитись до цієї */
 
   private:
+    volatile bool _extOn = false;       /* MUTE зовнішнього підсилювача: зараз «звук» */
+    bool          _extSet = false;      /* вивід уже виставлено (перший запис — завжди) */
     bool     _dirty = false;
     uint32_t _dirtyMs = 0;
     void     _load();

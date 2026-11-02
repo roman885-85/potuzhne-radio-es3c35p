@@ -248,7 +248,8 @@ static void onState(AsyncWebServerRequest* r){
   o.kn("level", s.nightLevel); o.kn("act", extras.nightActive()); o.put('}');
   o.kn("led", s.ledMode);
   o.kn("save", s.batSave);
-  o.k("dev"); o.put('{'); o.kn("noBat", s.noBat); o.kn("noIp", s.noIp); o.kn("noSd", s.noSd); o.kn("dac", s.dac); o.put('}');
+  o.k("dev"); o.put('{'); o.kn("noBat", s.noBat); o.kn("noIp", s.noIp); o.kn("noSd", s.noSd); o.kn("dac", s.dac);
+  o.kn("amute", s.extMute); o.kn("ampOn", extras.extAmpOn()); o.put('}');     /* MUTE зовнішнього підсилювача: режим і стан */
   o.k("bat"); o.put('{'); o.kn("mv", extras.batMv()); o.kn("pct", extras.batPct()); o.kn("chg", extras.charging());
   o.kn("full", extras.charged()); o.kn("pwr", extras.onPower()); o.kn("low", extras.lowBattery()); o.put('}');
   o.k("rec"); o.put('{'); o.kn("on", recorder.active()); o.kn("sec", recorder.seconds()); o.kn("bytes", recorder.bytes());
@@ -735,6 +736,11 @@ static void apply(const WebCmd& c){
   else if(!strcmp(k, "sleepEarMin")) s.sleepEarMin = clampi(v, 1, 60);
   else if(!strcmp(k, "presWake"))   { s.presWake = clampi(v, 0, 1); if(s.presWake && !s.micOn){ s.micOn = 1; mic.apply(); } }
   else if(!strcmp(k, "presOff"))    { s.presOff = clampi(v, 0, 120); if(s.presOff && !s.micOn){ s.micOn = 1; mic.apply(); } }
+  else if(!strcmp(k, "amute")){
+    s.extMute = clampi(v, 0, 2);         /* MUTE зовнішнього підсилювача: 0 вимк, 1 тихо — низьким, 2 тихо — високим */
+    extras.changed(); extras.extMuteApply();
+    ext = false;
+  }
   else if(!strcmp(k, "dac")){
     uint8_t d = clampi(v, 0, 3);         /* VS1053 — лише окремою прошивкою */
     if(d != s.dac){ s.dac = d; extras.changed(); extras.applyDac(); }

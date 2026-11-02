@@ -270,8 +270,10 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
       знімали приглушення завжди — і звук події (зокрема привітання заставки)
       лунав із вбудованого динаміка навіть тоді, коли вибрано зовнішній ЦАП.  */
   const bool ownAmp = extras.s.dac == 0 && MUTE_PIN != 255;
-  bool wasMuted = ownAmp && digitalRead(MUTE_PIN) == MUTE_VAL;
+  const bool extAmp = extras.s.dac != 0 && extras.s.extMute;           /* MUTE зовнішнього підсилювача під'єднано */
+  bool wasMuted = (ownAmp && digitalRead(MUTE_PIN) == MUTE_VAL) || (extAmp && !extras.extAmpOn());
   if(ownAmp) digitalWrite(MUTE_PIN, !MUTE_VAL);
+  if(extAmp) extras.extAmp(true);
   uint32_t rate = player.getSampleRate();
   if(rate < 8000) rate = 44100;
   const size_t FR = 256;
@@ -323,6 +325,7 @@ void YoSfx::_out(const Clip& c, int32_t g, uint64_t startPos, SfxEvent ev){
       tail -= n;
     }
     if(!player.isRunning() && ownAmp) digitalWrite(MUTE_PIN, MUTE_VAL);
+    if(!player.isRunning() && extAmp) extras.extAmp(false);
   }
   _lastEndMs = millis();
   _outBusy = false;

@@ -1785,11 +1785,11 @@ const is35 = () => !!(S && S.board === 'ES3C35P');
 const dacs = () => is35() ? DACS_35 : DACS_28;
 const dacOf = i => dacs()[i] || dacs()[0];
 VIEWS.dev = page => {
-  const tg = h('div'), dac = h('div'), lg = h('div');
+  const tg = h('div'), dac = h('div'), mu = h('div'), lg = h('div');
   const snd = sfxSection();
   page.append(h('p', { class: 'lead' }, 'Для тих, хто перебудовує радіо: що показувати на екрані, заставка, звуки подій і куди йде звук.'),
-    card('На екрані', tg), ...snd.els, card('Аудіовихід', dac), card('Логотипи станцій', lg));
-  let sel = null, s1 = '', s2 = '';
+    card('На екрані', tg), ...snd.els, card('Аудіовихід', dac), card('MUTE зовнішнього підсилювача', mu), card('Логотипи станцій', lg));
+  let sel = null, s1 = '', s2 = '', s3 = '';
   live(() => {
     if (!S) return;
     snd.upd();
@@ -1802,13 +1802,17 @@ VIEWS.dev = page => {
         row('Функції картки пам\'яті', 'плеєр картки, запис ефіру, кнопка джерела в шапці', sw(!d.noSd, v => setx({ noSd: v ? 0 : 1 }))));
     }
     if (sel === null) sel = d.dac;
-    const sig2 = sel + '|' + d.dac;
+    const sig2 = sel + '|' + d.dac + '|' + d.amute;
     if (sig2 !== s2) {
       s2 = sig2; dac.textContent = '';
       const cards = h('div', { class: 'dacs' });
       dacs().forEach((x, i) => cards.append(h('button', { type: 'button', class: 'dac' + (i === sel ? ' sel' : '') + (i === d.dac ? ' cur' : ''), onclick: () => { sel = i; s2 = ''; pageLive('x'); } },
         h('b', null, x.n), h('small', null, i === d.dac ? 'зараз звук іде сюди' : x.k))));
-      const x = dacOf(sel);
+      const x0 = dacOf(sel);
+      /*  MUTE «тихо — низьким» на PCM5102A — це його XSMT: тоді XSMT іде не на 3V3, а на вивід MUTE  */
+      const x = (d.amute === 1 && x0.p.some(p => p[1] === 'XSMT'))
+        ? Object.assign({}, x0, { p: x0.p.map(([a, b]) => b === 'XSMT' ? [is35() ? 'RXD0' : 'IO3', 'XSMT'] : [a, b]) })
+        : x0;
       const det = h('div', { style: { marginTop: '14px' } }, h('p', { style: { margin: '0 0 4px' } }, x.d[0]), h('p', { class: 'note', style: { marginTop: 0 } }, x.d[1]));
       if (x.p.length) {
         det.append(h('table', { class: 'wire' }, h('tbody', null, h('tr', null, h('td', { class: 'gd' }, 'Плата (роз\'єм)'), h('td'), h('td', { class: 'gd' }, x.n)),
@@ -1828,6 +1832,18 @@ VIEWS.dev = page => {
         x.alt ? h('span', { class: 'pill bad' }, 'Потрібна окрема прошивка') :
         btn('Увімкнути ' + x.n, 'check', async () => { if (sel !== 0 && !await confirmBox('Перемкнути звук?', `Звук піде на ${x.n}. Вбудований динамік замовкне. Повернути можна тут або в меню радіо «розробник».`, 'Перемкнути')) return; await setx({ dac: sel }); setTimeout(pollState, 500); }, 'acc')));
       dac.append(cards, det);
+    }
+    /*  MUTE зовнішнього підсилювача: радіо глушить його, коли мовчить (вивід замість колишнього ключа живлення)  */
+    const sig3 = [d.amute, d.ampOn, d.dac].join('|');
+    if (sig3 !== s3) {
+      s3 = sig3; mu.textContent = '';
+      const pin = is35() ? 'RXD0 (роз\'єм P2, контакт 4)' : 'IO3 (роз\'єм розширення)';
+      mu.append(row('Вивід ' + pin, 'радіо глушить зовнішній підсилювач (чи ЦАП через XSMT), поки мовчить',
+          seg([[0, 'Вимк'], [1, 'Тихо — низьким'], [2, 'Тихо — високим']], d.amute, v => setx({ amute: v }))),
+        h('p', { class: 'note' }, d.amute === 1 ? 'Низький рівень — тихо: так працюють XSMT у PCM5102A і MUTE у PAM8403. Резистор 10 кОм з виводу на GND тримає тишу й на старті, поки прошивка ще не запустилась.'
+          : d.amute === 2 ? 'Високий рівень — тихо: так працює MUTE у TPA3116. Резистор 10 кОм з виводу на 3,3 В тримає тишу й на старті.'
+          : 'Вимкнено: вивід не використовується. Підключіть до нього вхід MUTE підсилювача чи XSMT ЦАП і виберіть, яким рівнем він глушить.'),
+        d.amute ? h('p', { class: 'note' }, d.dac === 0 ? 'Зараз тихо: звук іде на вбудований динамік.' : (d.ampOn ? 'Зараз: звук.' : 'Зараз: тихо.')) : null);
     }
     if (!lg.dataset.ok) {
       lg.dataset.ok = 1;

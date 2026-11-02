@@ -19,7 +19,18 @@ static const uint8_t DAC_N = 4;
 static const char* const DAC_NAME[5] = { "ES8311", "PCM5102A", "UDA1334A", "MAX98357A", "VS1053B" };
 static const uint8_t DAC_N = 5;
 #endif
-static const char* const PWR_LBL[3] = { "вимк", "високий", "низький" };
+static const char* const MUTE_LBL[3] = { "вимк", "тихо — низьким", "тихо — високим" };
+/*  Підпис під MUTE зовнішнього підсилювача: що й куди під'єднати і що на виводі зараз (живе).  */
+static const char* vMuteNote(){
+  static char b[220];
+  const uint8_t m = extras.s.extMute;
+  if(!m) return "Вхід MUTE підсилювача (чи XSMT ЦАП) — на " EXT_MUTE_NAME ":\nрадіо глушитиме його, коли мовчить.";
+  snprintf(b, sizeof(b), "%s\n%s\n%s",
+           tr(m == 1 ? "Тихо — низьким: XSMT у PCM5102A, MUTE у PAM8403." : "Тихо — високим: MUTE у TPA3116."),
+           tr(m == 1 ? "Резистор 10 кОм з " EXT_MUTE_NAME " на GND — тихо й на старті." : "Резистор 10 кОм з " EXT_MUTE_NAME " на 3,3 В — тихо й на старті."),
+           extras.s.dac == 0 ? tr("зараз: тихо — звук іде на вбудований динамік") : tr(extras.extAmpOn() ? "зараз: звук" : "зараз: тихо"));
+  return b;
+}
 static const char* const DAC_KIND[5] = { "вбудований кодек і підсилювач", "стерео ЦАП, лінійний вихід",
                                          "стерео ЦАП, навушники й лінія", "моно підсилювач 3 Вт на динамік",
                                          "окремий декодер, інша прошивка" };
@@ -38,13 +49,9 @@ static Item s_devItems[] = {
           [](int32_t v){ extras.s.noSd = !v; extras.changed(); if(extras.s.noSd){ recorder.stop(); if(config.getMode() == PM_SDCARD) config.changeMode(PM_WEB); } }),
 #if EXT_DAC
   iNav("Аудіовихід", IC_SPEAKER, C_TEAL, vDac, [](){ M.push(&pgDac); }),
-  iSeg("Ключ живлення модуля (" DAC_PWR_NAME ")", PWR_LBL, 3, [](){ return (int32_t)extras.s.dacPwr; },
-       [](int32_t v){ extras.s.dacPwr = v; extras.changed(); extras.applyDac(); }),
-  iNote([](){ return extras.s.dacPwr == 1
-      ? "ДОСЛІД: " DAC_PWR_NAME " вмикає модуль ВИСОКИМ рівнем.\nСхема: P-канальний у розрив 5 В, затвор через 10 кОм\nна 5 В, NPN із затвора на землю, база через 10 кОм\nна " DAC_PWR_NAME ". Модуль гасне разом із радіо."
-      : extras.s.dacPwr == 2
-      ? "ДОСЛІД: " DAC_PWR_NAME " вмикає модуль НИЗЬКИМ рівнем.\nСхема простіша: один P-канальний, витік на 3,3 В,\nзатвор прямо на " DAC_PWR_NAME ". Годиться модулям, яким\nвистачає 3,3 В. Модуль гасне разом із радіо."
-      : "ДОСЛІД: вимкнене радіо світить модулем — шина\n3,3 В мусить лишатись під напругою, на ній годинник\nі сенсор пробудження. " DAC_PWR_NAME " може гасити модуль через\nключ. Рівень виберіть за своїм транзистором."; }, 66),
+  iSeg("MUTE підсилювача (" EXT_MUTE_NAME ")", MUTE_LBL, 3, [](){ return (int32_t)extras.s.extMute; },
+       [](int32_t v){ extras.s.extMute = v; extras.changed(); extras.extMuteApply(); }),
+  iNote(vMuteNote, 50),
 #endif
   iNav("Заставка й звуки", IC_NOTE, C_PINK, vSnd, [](){ M.push(&pgDevSnd); }),
   iSection("ЛОГОТИПИ СТАНЦІЙ"),
@@ -222,12 +229,12 @@ void DacInfoPage::draw(Gfx& g){
   };
   const Pin* pins = nullptr; uint8_t np = 0;
   switch(s_dacSel){ case 1: pins = P1; np = 7; break; case 2: pins = P2; np = 5; break; case 3: pins = P3; np = 5; break; case 4: pins = P4; np = 9; break; default: break; }
-  /*  Досліду живлення з IO3 — показуємо саме те, що треба з'єднати зараз:
-      провід живлення йде не на 5V роз'єму UART, а на IO3.  */
+  /*  MUTE «тихо — низьким» на PCM5102A — це його вхід XSMT: показуємо, що XSMT іде не на 3V3, а на
+      вивід MUTE (з резистором 10 кОм на GND).  */
   static Pin alt[9];
-  if(np && extras.s.dacPwr && s_dacSel >= 1 && s_dacSel <= 3){
+  if(np && extras.s.extMute == 1 && s_dacSel == 1){
     memcpy(alt, pins, np * sizeof(Pin));
-    alt[0].esp = "5V через ключ";
+    for(uint8_t k = 0; k < np; k++) if(!strcmp(alt[k].mod, "XSMT")) alt[k].esp = EXT_MUTE_NAME;
     pins = alt;
   }
   int16_t ty;
@@ -260,8 +267,8 @@ void DacInfoPage::draw(Gfx& g){
   }
   g.text(MX + 2, ty, D[s_dacSel][0], F_SM, C_TXT2, AL_L, CWID);
   g.text(MX + 2, ty + 14, D[s_dacSel][1], F_SM, C_TXT2, AL_L, CWID);
-  if(extras.s.dacPwr && s_dacSel >= 1 && s_dacSel <= 3)
-    g.text(MX + 2, ty + 28, "Дослід: " DAC_PWR_NAME " керує ключем 5 В — модуль гасне з радіо.", F_SM, C_ORANGE, AL_L, CWID);
+  if(extras.s.extMute && s_dacSel >= 1 && s_dacSel <= 3)
+    g.text(MX + 2, ty + 28, "MUTE: " EXT_MUTE_NAME " — до XSMT ЦАП чи входу MUTE підсилювача.", F_SM, C_ORANGE, AL_L, CWID);
   if(s_dacSel == 4){
     g.box(MX, 160, CWID, 36, 12, C_SURF2);
     g.text(SW / 2, 183, "Де ці роз'єми на платі", F_ROWB, C_TXT, AL_C);

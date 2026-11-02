@@ -103,6 +103,7 @@ ESP32-S3 N16R8: 16 MB QSPI flash, 8 MB OPI PSRAM; USB-CDC goes straight into the
 | microSD | 4-bit SDIO: CLK 5, CMD 4, D0 6, D1 7, D2 2, D3 3 |
 | WS2812 LED | 40 |
 | Battery voltage | 8 (100 K / 100 K divider) |
+| External amplifier MUTE | RXD0 (IO44), connector P2, pin 4 |
 
 Buttons are not used by the radio — touch only; BOOT is needed for flashing only.
 Manufacturer's board page: <https://www.lcdwiki.com/3.5inch_ESP32-S3_Display>.
@@ -122,8 +123,24 @@ For a line output to an amplifier or headphones — a PCM5100/PCM5102A module on
 | SCK | to GND (the module makes its own clock) |
 | XSMT | to 3.3 V (P3, pin 1) |
 
-Then on screen: **Menu › Settings › Developer › Audio output** — "stereo DAC, line output". The RXD0 pin (IO44,
-P2 pin 4) can switch the module's power through a transistor — "Module power switch" on the same page.
+Then on screen: **Menu › Settings › Developer › Audio output** — "stereo DAC, line output".
+
+### External amplifier MUTE
+
+The radio mutes an external amplifier (or the DAC via its XSMT input) while it is silent: at power-on, after stop, in
+sleep, before a restart or update; it unmutes only while a station, an event sound or a test tone is playing and the
+sound goes to the external DAC. Switching stations does not mute it — so it does not click. The pin is **RXD0 (IO44), connector P2, pin 4**. Setting:
+**Menu › Settings › Developer › Amplifier MUTE (RXD0)** (also on the radio's web page: Developer):
+
+| Mode | Quiet when | For | Resistor to stay quiet at power-on |
+|---|---|---|---|
+| off | — | pin unused | — |
+| quiet when low | low level | XSMT on PCM5102A, MUTE on PAM8403 | 10 kΩ from RXD0 to GND |
+| quiet when high | high level | MUTE on TPA3116 | 10 kΩ from RXD0 to 3.3 V |
+
+Until the firmware starts, nothing drives RXD0 (it is a UART input) — the resistor keeps it quiet at power-on. Below
+the switch you see the pin's current state: "sound" or "quiet". For PCM5102A in "quiet when low" mode XSMT goes to
+RXD0 (not to 3.3 V) — the wiring diagram on screen and on the web page shows it that way.
 
 ---
 

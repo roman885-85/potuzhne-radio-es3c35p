@@ -729,6 +729,7 @@ void YoMic::_sweep(int16_t* raw){
   const UBaseType_t prioWas = uxTaskPriorityGet(nullptr);
   vTaskPrioritySet(nullptr, 6);
   if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, _swAmp ? !MUTE_VAL : MUTE_VAL);  /* підсилювач */
+  extras.extAmp(_swAmp);                                                         /* і зовнішній, якщо звук іде на нього */
   /*  Фора буферу передачі. Далі запис і читання йдуть у лок-степі (записали
       кадр — стільки ж прочитали), тож без фори буфер передачі весь час на нулі:
       будь-яка затримка планувальника рве тон на шматки по 6 мс, і на слух це
@@ -763,6 +764,7 @@ void YoMic::_sweep(int16_t* raw){
   }
   i2s_zero_dma_buffer(I2S_NUM_0);
   if(MUTE_PIN != 255 && !player.isRunning()) digitalWrite(MUTE_PIN, MUTE_VAL);
+  if(!player.isRunning()) extras.extAmp(false);
   free(cap); free(sil); free(hw); free(out);
   vTaskPrioritySet(nullptr, prioWas);
   _swState = ok ? 2 : 3;
@@ -879,6 +881,7 @@ const char* YoMic::simStart(uint8_t kind, uint8_t count, uint16_t gapMs){
   if(count > 6) count = 6;
   _tsCount = count; _tsGap = gapMs < 60 ? 60 : gapMs; _tsPos = 0;
   if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, !MUTE_VAL);
+  extras.extAmp(true);
   _tsKind = kind >= 2 ? 3 : kind ? 2 : 1;
   return nullptr;
 }
@@ -984,5 +987,6 @@ void YoMic::_simChunk(int16_t* buf){
   if(_tsPos >= total){
     _tsKind = 0;
     if(MUTE_PIN != 255 && !player.isRunning()) digitalWrite(MUTE_PIN, MUTE_VAL);
+    if(!player.isRunning()) extras.extAmp(false);
   }
 }
