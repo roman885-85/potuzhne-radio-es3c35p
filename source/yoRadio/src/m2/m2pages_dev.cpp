@@ -128,29 +128,34 @@ static ListPage s_devSnd("Заставка й звуки", s_dsItems, sizeof(s_d
 Page& pgDevSnd = s_devSnd;
 
 /*  =================== «Аудіовихід» =================== */
+/*  Рядок — 52, але щоб усі виходи стали на екран без прокрутки (на ES3C35P їх чотири: 4·52 + 16 = 224 > 200,
+    останній обрізався — власник 02.11.2026), рядок стискається до 46.  */
+static int16_t dacRowH(){ int16_t h = (CH - 16) / DAC_N; return h > 52 ? 52 : (h < 44 ? 44 : h); }
 class DacPage : public Page {
   public:
     const char* title() override { return "Аудіовихід"; }
-    int16_t height() override { return 4 + DAC_N * 52 + 12; }
+    int16_t height() override { return 4 + DAC_N * dacRowH() + 12; }
     void draw(Gfx& g) override {
+      const int16_t rh = dacRowH(), k = (52 - rh) / 2;          /* на скільки підняти вміст рядка */
       for(uint8_t i = 0; i < DAC_N; i++){
-        int16_t y = 4 + i * 52;
-        if(!g.visible(MX, y, CWID, 52)) continue;
+        int16_t y = 4 + i * rh;
+        if(!g.visible(MX, y, CWID, rh)) continue;
         bool cur = extras.s.dac == i;
-        drawCard(g, MX, y, CWID, 52, i == 0, i == DAC_N - 1);
+        drawCard(g, MX, y, CWID, rh, i == 0, i == DAC_N - 1);
         if(i) g.fill(MX + 50, y, CWID - 50, 1, C_LINE);
-        drawBadge(g, MX + 12, y + 12, i == 4 ? IC_CHIP : IC_SPEAKER, cur ? C_TEAL : C_SURF2);
-        g.text(MX + 50, y + 23, DAC_NAME[i], F_ROWB, cur ? C_TEAL : C_TXT);
-        g.text(MX + 50, y + 41, cur ? "зараз звук іде сюди" : DAC_KIND[i], F_SM, cur ? C_TEAL : C_TXT2, AL_L, CWID - 80);
-        icon(g, IC_CHEV, MX + CWID - 16, y + 26, C_TXT2, C_SURF);
+        drawBadge(g, MX + 12, y + 12 - k, i == 4 ? IC_CHIP : IC_SPEAKER, cur ? C_TEAL : C_SURF2);
+        g.text(MX + 50, y + 23 - k, DAC_NAME[i], F_ROWB, cur ? C_TEAL : C_TXT);
+        g.text(MX + 50, y + 41 - k, cur ? "зараз звук іде сюди" : DAC_KIND[i], F_SM, cur ? C_TEAL : C_TXT2, AL_L, CWID - 80);
+        icon(g, IC_CHEV, MX + CWID - 16, y + 26 - k, C_TXT2, C_SURF);
       }
     }
     void tick(uint32_t now) override { static uint32_t t = 0; static uint8_t d = 255; if(now - t > 300){ t = now; if(d != extras.s.dac){ d = extras.s.dac; M.invalAll(); } } }
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override {
       (void)x;
-      if(y < 4 || y >= 4 + DAC_N * 52) return -1;
-      int16_t i = (y - 4) / 52;
-      r = Rect(MX, 4 + i * 52, CWID, 52); radius = (i == 0 || i == DAC_N - 1) ? R_CARD : 0;
+      const int16_t rh = dacRowH();
+      if(y < 4 || y >= 4 + DAC_N * rh) return -1;
+      int16_t i = (y - 4) / rh;
+      r = Rect(MX, 4 + i * rh, CWID, rh); radius = (i == 0 || i == DAC_N - 1) ? R_CARD : 0;
       return i;
     }
     void tap(int16_t id, int16_t x, int16_t y) override { (void)x; (void)y; if(id >= 0 && id < DAC_N){ s_dacSel = id; s_dacAlt = false; M.push(&pgDacInfo); } }

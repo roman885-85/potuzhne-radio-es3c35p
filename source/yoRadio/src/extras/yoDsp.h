@@ -137,7 +137,9 @@ class YoDsp {
     uint8_t  _rtIter = 0, _rtLinStep = 0, _rtLinTries = 0, _rtGain = 4;
     bool     _rtSweep(int8_t level, uint32_t mask);
     void     _rtFinish(bool ok, const char* msg);
-    char     _rtMsg[48] = {0};
+    char     _rtMsg[96] = {0};                /* кирилиця — по два байти на літеру: 48 обрізало «поправка не потрібна (…)» */
+    float    _rtTg0 = 0.35f;                  /* з якої гучності тонів почали (зовнішній ЦАП — гучність музики) */
+    uint8_t  _rtOldDac = 0;                   /* eqRoomDac до заміру — повернути, якщо не вийде */
 
     void _recalc();
     static void _peak(Bq& q, float fs, float f, float Q, float db);

@@ -105,7 +105,7 @@ uint8_t YoDsp::_build(Bq* q, float fs, uint8_t vol, uint8_t* nGuard) const {
   for(uint8_t b = 0; b < EQ_BANDS; b++){
     float db = 0;
     if(e.eqOn) db += e.eq[b];
-    if(e.eqRoomOn) db += e.eqRoom[b];
+    if(e.eqRoomOn && e.eqRoomDac == e.dac) db += e.eqRoom[b];   /* поправка — лише для того виходу, де міряли */
     if(db > 18) db = 18;
     if(db < -18) db = -18;
     if(fabs(db) < 0.25f || BAND_HZ[b] > fs * 0.45f) continue;   /* рівна смуга — без ланки */
@@ -461,6 +461,7 @@ bool YoDsp::roomFromSweep(char* why, size_t n){
     if(c > 6) c = 6; if(c < -9) c = -9;
     extras.s.eqRoom[b] = (int8_t)lroundf(c);
   }
+  extras.s.eqRoomDac = extras.s.dac;
   extras.s.eqRoomOn = 1;
   extras.changed();
   changed();
@@ -485,7 +486,11 @@ uint8_t YoDsp::roomProgress() const {
 const char* YoDsp::roomTuneStart(){
   if(_rtState > RT_IDLE && _rtState < RT_DONE) return "уже налаштовую";
   if(!mic.running())  return "мікрофон не запущено";
-  if(extras.s.dac)    return "звук іде на зовнішній ЦАП";
+  /*  Зовнішній ЦАП: до 02.11.2026 тут була відмова («звук іде на зовнішній ЦАП») — власник: «не працює функція
+      налаштування звуку під кімнату». Мікрофон і тоді чує: такт і слово лишаються на кодеку (applyDac), а тони
+      йдуть тим самим шляхом, що й музика, — у колонки. Гучність тонів — як у музики (див. RT_STOP), тож на нулі
+      їх не буде чути зовсім.  */
+  if(extras.s.dac && config.store.volume == 0) return "гучність 0 — зробіть гучніше";
   _rtResume = player.isRunning();
   if(_rtResume) player.sendCommand({PR_STOP, 0});
   _rtState = RT_STOP; _rtT = millis();
@@ -509,6 +514,7 @@ void YoDsp::_rtFinish(bool ok, const char* msg){
   if(!ok){
     memcpy(e.eqRoom, _rtOld, EQ_BANDS);
     e.eqRoomOn = _rtSave[1];
+    e.eqRoomDac = _rtOldDac;
   }
   mic.apply();
   extras.changed();
@@ -533,7 +539,12 @@ void YoDsp::roomTick(){
     e.eqOn = 0; e.eqRoomOn = 0; e.eqLoud = 0; e.vbass = 0;       /* рівно; захист динаміка лишається */
     changed();
     _rtGain = e.micGain ? (e.micGain > 1 ? e.micGain - 1 : 0) : 4;
-    _testGain = 0.35f;
+    /*  Вбудований динамік — стала гучність тонів, як і була. Зовнішній ЦАП іде на чужий підсилювач, і його
+        підсилення невідоме: стала 0,35 там на ~15 дБ гучніша за музику власника. Тож тони — з тією самою
+        гучністю, що й музика зараз (з урахуванням «максимальної гучності»): не гучніше, ніж людина слухає.  */
+    _testGain = e.dac ? (float)player.volToI2S(config.store.volume) / 256.0f * volMaxK() : 0.35f;
+    _rtTg0 = _testGain;
+    _rtOldDac = e.eqRoomDac;
     _rtLinStep = 0; _rtLinTries = 0;
     _rtState = RT_LIN;
     snprintf(_rtMsg, sizeof(_rtMsg), "перевіряю мікрофон");
@@ -556,10 +567,18 @@ void YoDsp::roomTick(){
     Serial.printf("##ROOM#\tлінійність: різниця %.1f дБ (має бути 12), пік %d, підсилення %u, гучність тонів %.2f\n",
                   diff, (int)_rtLinPeak, (unsigned)_rtGain, _testGain);
     if(!lin){
+      /*  Тихий тон тоне в шумі кімнати — тоді різниця менша за 12 дБ не від спотворення, і зменшувати підсилення
+          марно (стане ще гірше). Кажемо прямо: тони треба гучніше.  */
+      const float snrQ = mic.sweepDb(12) - mic.sweepNoise(12);
+      if(!clip && !isnan(snrQ) && snrQ < 15.0f){
+        _rtFinish(false, extras.s.dac ? "тони ледь чути — зробіть гучніше" : "мікрофон не чує тонів");
+        return;
+      }
       if(++_rtLinTries > 4){ _rtFinish(false, "мікрофон спотворює звук"); return; }
-      /*  зменшуємо спершу підсилення мікрофона, далі — гучність тонів  */
+      /*  зменшуємо спершу підсилення мікрофона, далі — гучність тонів (не нижче шостої частини початкової:
+          для вбудованого динаміка це ті самі 0,06, що й були)  */
       if(_rtGain >= 2){ _rtGain -= 2; mic.gainTemp(_rtGain); }
-      else if(_testGain > 0.06f) _testGain *= 0.5f;
+      else if(_testGain > _rtTg0 / 6.0f) _testGain *= 0.5f;
       else { _rtFinish(false, "мікрофон спотворює звук"); return; }
       _rtLinStep = 0;
       _rtSweep(-12, 1UL << 12);
@@ -572,7 +591,7 @@ void YoDsp::roomTick(){
   }
 
   float lvl[EQ_BANDS]; bool ok[EQ_BANDS];
-  if(!sweepBands(lvl, ok)){ _rtFinish(false, "мікрофон не чує тонів"); return; }
+  if(!sweepBands(lvl, ok)){ _rtFinish(false, extras.s.dac ? "мікрофон не чує тонів — зробіть гучніше" : "мікрофон не чує тонів"); return; }
   float ref = bandsRef(lvl, ok), spread = bandsSpread(lvl, ok);
 
   if(_rtState == RT_BASE){
@@ -586,6 +605,7 @@ void YoDsp::roomTick(){
     }
     memcpy(_rtBest, e.eqRoom, EQ_BANDS);
     _rtBestSpread = _rtBefore;
+    e.eqRoomDac = e.dac;                                          /* поправка — для цього виходу */
     e.eqRoomOn = 1;
     changed();
     _rtIter = 1;

@@ -188,27 +188,29 @@ static ListPage s_sound("Обробка", s_sndItems, sizeof(s_sndItems) / sizeo
 Page& pgSound = s_sound;
 
 /*  =================== «Під кімнату» =================== */
-static char s_rmErr[48] = { 0 };
+static char s_rmErr[96] = { 0 };          /* кирилиця — по два байти на літеру */
 static bool roomHas(){ for(uint8_t b = 0; b < 10; b++) if(extras.s.eqRoom[b]) return true; return false; }
 static bool roomBusy(){ uint8_t st = yoDsp.roomState(); return st == 1 || st == 2; }
 
 static void roomChart(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
   g.box(x, y, w, h, R_CARD, C_SURF);
   const ExtStore& e = extras.s;
-  const int16_t zy = y + 56;
+  /*  графік низький (62): сторінка вміщується на екран цілком — кнопка «Зміряти» й перемикач не під краєм
+      (власник 02.11.2026: «частина меню не влазить в екран, і треба гортати»); 2,5 точки на дБ  */
+  const int16_t zy = y + 20;
   g.fill(x + 10, zy, w - 20, 1, C_LINE);
   bool has = roomHas();
   for(uint8_t b = 0; b < 10; b++){
     const int16_t cx = x + 6 + (w - 12) * b / 10 + (w - 12) / 20;
     int v = e.eqRoom[b];
     if(v){
-      int16_t yv = zy - v * 4;
+      int16_t yv = zy - (int16_t)lroundf(v * 2.5f);
       int16_t a = yv < zy ? yv : zy, bb = yv < zy ? zy : yv;
       g.box(cx - 5, a, 10, bb - a + 1, 3, e.eqRoomOn ? C_TEAL : C_TXT3);
     }
     g.text(cx, y + h - 8, EQ_FRQ[b], F_TINY, C_TXT2, AL_C);
   }
-  if(!has) g.text(x + w / 2, zy - 12, "ще не міряли", F_SM, C_TXT2, AL_C);
+  if(!has) g.text(x + w / 2, zy + 18, "ще не міряли", F_SM, C_TXT2, AL_C);
   if(roomBusy()){
     uint8_t pr = yoDsp.roomProgress();
     g.box(x + 12, y + 8, w - 24, 4, 2, C_SURF2);
@@ -222,14 +224,16 @@ static const char* vRoomNote(){
   else if(st == 1 || st == 2)    snprintf(b, sizeof(b), "%s… %u%%", yoDsp.roomMsg(), (unsigned)yoDsp.roomProgress());
   else if(st == 3)               snprintf(b, sizeof(b), "%s", yoDsp.roomMsg());
   else if(st == 4)               snprintf(b, sizeof(b), tr("не вийшло: %s"), yoDsp.roomMsg());
+  else if(extras.s.eqRoomOn && extras.s.eqRoomDac != extras.s.dac)
+                                 snprintf(b, sizeof(b), "%s", "поправку міряли для іншого виходу —\nзміряйте ще раз");
+  else if(extras.s.dac)          snprintf(b, sizeof(b), "%s", "тони підуть у колонки з гучністю музики;\nу кімнаті має бути тихо");
   else                           snprintf(b, sizeof(b), "радіо грає тони й слухає себе мікрофоном;\nу кімнаті має бути тихо");
   return b;
 }
 static const char* vRoomBtn(){ return roomBusy() ? "Зупинити" : (roomHas() ? "Зміряти ще раз" : "Зміряти"); }
 static Item s_roomItems[] = {
-  iGap(4),
-  iCustom(130, roomChart),
-  iNote(vRoomNote, 42),
+  iCustom(62, roomChart),
+  iNote(vRoomNote, 34),                     /* два рядки: 15 + 14 і ще нижні виносні */
   iButton("Зміряти", IC_WAVE, [](){
     ExtStore& e = extras.s;
     s_rmErr[0] = 0;
@@ -244,7 +248,7 @@ static Item s_roomItems[] = {
 class RoomPage : public ListPage {
   public:
     RoomPage() : ListPage("Під кімнату", s_roomItems, sizeof(s_roomItems) / sizeof(s_roomItems[0])) {}
-    void enter() override { s_rmErr[0] = 0; s_roomItems[3].text = vRoomBtn; ListPage::enter(); }
+    void enter() override { s_rmErr[0] = 0; s_roomItems[2].text = vRoomBtn; ListPage::enter(); }
     void tick(uint32_t now) override {
       ListPage::tick(now);
       static uint32_t t = 0; static uint8_t st = 255, pr = 255;

@@ -623,7 +623,9 @@ uint16_t YoMic::sweepHz(uint8_t i){ return i < SWEEP_N ? SW_HZ[i] : 0; }
     ними вище 8 кГц не зміряти.  */
 const char* YoMic::sweepStart(int8_t dbfs, bool amp, uint32_t mask, bool dsp){
   if(!_task)            return "мікрофон не запущено";
-  if(extras.s.dac)      return "звук іде на зовнішній ЦАП, вбудований динамік вимкнено";
+  /*  Зовнішній ЦАП — лише через обробку (dsp): там гучність тонів — людська чи «під кімнату» (_testGain).
+      Сирий тон пішов би на чужий підсилювач на −12 дБ від повної шкали — на 20–40 дБ гучніше за музику.  */
+  if(extras.s.dac && !dsp) return "зовнішній ЦАП: лише через обробку (dsp)";
   if(_swState == 1 || _swReq) return "уже міряю";
   if(player.isRunning()) return "спершу зупиніть звук";
   if(dbfs > -6)  dbfs = -6;
@@ -729,7 +731,9 @@ void YoMic::_sweep(int16_t* raw){
       скрипом». Повертаємо пріоритет наприкінці.  */
   const UBaseType_t prioWas = uxTaskPriorityGet(nullptr);
   vTaskPrioritySet(nullptr, 6);
-  if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, _swAmp ? !MUTE_VAL : MUTE_VAL);  /* підсилювач */
+  /*  вбудований підсилювач — лише коли звук іде на вбудований динамік: із зовнішнім ЦАП його лінія даних
+      відв'язана (applyDac), і ввімкнений підсилювач дав би хіба клацання й шум  */
+  if(MUTE_PIN != 255) digitalWrite(MUTE_PIN, (_swAmp && !extras.s.dac) ? !MUTE_VAL : MUTE_VAL);
   if(_swAmp) extras.extAmpKick(false); else extras.extAmp(false);               /* і зовнішній, якщо звук іде на нього */
   /*  Фора буферу передачі. Далі запис і читання йдуть у лок-степі (записали
       кадр — стільки ж прочитали), тож без фори буфер передачі весь час на нулі:

@@ -755,8 +755,16 @@ void Menu::_processTouch(){
             рух ловився як прокрутка: повзунок не рухався, список їхав і
             пружинив назад.  */
         const uint8_t gr = _pressId >= 0 ? p->grab(_pressId) : 0;
-        const int16_t need = gr == 1 ? (int16_t)(abs(dx) * 2) : (int16_t)abs(dx);
-        if(abs(dy) > 8 && abs(dy) >= need && p->scrollable() && _maxScroll(p) > 0){
+        /*  Прокрутка не всякий раз ловилась (власник 02.11.2026: «скролінг не завжди спрацьовує»): вимагали,
+            щоб угору-вниз було не менше, ніж убік (45°), а щойно палець відходив на 14 точок — жест «мертвів»
+            до кінця. Свайп великим пальцем іде дугою, і на перших точках бік часто більший. Тепер: до ~55° від
+            вертикалі — прокрутка одразу; після 14 точок — і до ~63°; «мертвий» — лише явно поперечний рух.
+            Над повзунком, як і було, угору-вниз має бути вдвічі більше.  */
+        const int16_t ady = (int16_t)abs(dy), adx = (int16_t)abs(dx);
+        const bool canScroll = p->scrollable() && _maxScroll(p) > 0;
+        const bool far = adx > 14 || ady > 14;
+        const bool vert = gr == 1 ? ady >= adx * 2 : (far ? ady * 2 >= adx : ady * 10 >= adx * 7);
+        if(ady > 8 && vert && canScroll){
           _tm = TM_SCROLL; _py0 = t.y; _ripOn = false;
           _scrollF = lroundf(_scrollF) == p->scroll ? _scrollF : (float)p->scroll;
           _scroll0 = p->scroll;
@@ -764,8 +772,10 @@ void Menu::_processTouch(){
           if(_pressId >= 0) inval(_rip);
         }else if(abs(dx) > 5 && gr == 1){
           _tm = TM_GRAB; _ripUp = true; _ripUpT = t.t;
-        }else if(abs(dx) > 14 || abs(dy) > 14){
+        }else if(far && (!canScroll || adx > ady * 2 || ady > 40)){
           _tm = TM_DEAD;
+          /*  у журнал — щоб невдалі спроби прокрутки було видно числами (hist), не питаючи людину  */
+          if(canScroll) Serial.printf("##GEST#\tжест не став прокруткою: убік %d, угору-вниз %d за %u мс\n", (int)dx, (int)dy, (unsigned)(t.t - _pressT));
           if(_ripOn){ if((uint32_t)(t.t - _ripT0) < 90) _ripOn = false; else { _ripUp = true; _ripUpT = t.t; } }
         }
       }
@@ -797,7 +807,9 @@ void Menu::_processTouch(){
     }else if(t.kind == T_RELEASE){
       if(_tm == TM_SCROLL){
         _scrollEndT = t.t; _scrollEndX = t.x; _scrollEndY = t.y;
-        if(t.t - _lastMoveT > 90) _vel = 0;          /* палець зупинився перед відпусканням */
+        /*  палець зупинився перед відпусканням. Було 90 мс — а сенсор ST77922 сам віддає відпускання через
+            60 мс після останнього звіту (releaseMs), тож швидкий змах то котився, то ставав як укопаний  */
+        if(t.t - _lastMoveT > 150) _vel = 0;
         _fling = true;
         if(lroundf(_scrollF) != p->scroll) _scrollF = p->scroll;   /* дробову частину лишаємо — накат без стрибка */
       }else if(_tm == TM_GRAB){
@@ -805,7 +817,11 @@ void Menu::_processTouch(){
         _vel = 0; _scrollF = p->scroll;
         _startSnap(p, t.t);
       }else if(_tm == TM_UNDECIDED){
-        if(_pressId >= 0 && !_held) _post(A_TAP, p, _pressId, _ripX, _ripY, 0);
+        /*  жест, що так і не став прокруткою, але палець пішов далеко від дотику, — не натискання  */
+        const bool moved = abs(t.x - _px0) > 14 || abs(t.y - _py0) > 14;
+        if(_pressId >= 0 && !_held && !moved) _post(A_TAP, p, _pressId, _ripX, _ripY, 0);
+        if(moved) Serial.printf("##GEST#\tвідпустили, не вирішивши: убік %d, угору-вниз %d за %u мс\n",
+                                (int)(t.x - _px0), (int)(t.y - _py0), (unsigned)(t.t - _pressT));
       }else if(_tm == TM_BACK){
         _post(A_BACK, p, -1, 0, 0, 0);
       }
@@ -1052,15 +1068,16 @@ void Menu::_drawPage(Gfx& g, Page* p, float dxf, bool overlays){
     if(_ripUp){ int32_t up = now - _ripUpT; a = up >= 260 ? 0 : (int)(58 * (1 - up / 260.0f)); }
     if(a > 0) g.lighten(_rip, _ripR, _ripX, _ripY, rad, (uint8_t)a);
   }
-  /*  смужка прокрутки  */
+  /*  смужка прокрутки: видно завжди, коли сторінка довша за екран (у спокої — тьмяна), — щоб було ясно,
+      що внизу є ще пункти; раніше з'являлась лише під час прокрутки  */
   const int16_t mx = _maxScroll(p);
-  if(overlays && mx > 0 && (_tm == TM_SCROLL || _fling)){
+  if(overlays && mx > 0){
     g.originP(dx, HDR, dxP, uiP(HDR));
     int16_t ph = p->height();
     int16_t bh = (int16_t)((int32_t)CH * CH / ph); if(bh < 18) bh = 18;
     int16_t s = p->scroll < 0 ? 0 : (p->scroll > mx ? mx : p->scroll);
     int16_t by = (int16_t)((int32_t)(CH - bh - 8) * s / mx) + 4;
-    g.box(SW - 5, by, 3, bh, 1, C_TXT3);
+    g.box(SW - 5, by, 3, bh, 1, (_tm == TM_SCROLL || _fling) ? C_TXT3 : C_LINE);
   }
   g.restore(s1);
   g.origin(0, 0);

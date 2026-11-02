@@ -504,7 +504,8 @@ class TzPage : public HalfHourPage {
     TzPage(Item* items, uint8_t n) : HalfHourPage("Часовий пояс", true, items, n) {}
     void enter() override {
       ListPage::enter();
-      drum.top = 10; drum.h = 118; drum.n[0] = 27; drum.n[1] = 4; drum.label = tzLabel; drum.drag = false;
+      /*  барабан нижчий (96 замість 118), «Зараз» — у підписі: сторінка вміщується без прокрутки (було 264)  */
+      drum.top = 6; drum.h = 96; drum.n[0] = 27; drum.n[1] = 4; drum.label = tzLabel; drum.drag = false;
       int8_t h = config.store.tzHour, m = config.store.tzMin;
       drum.setVal(0, h + 12); drum.setVal(1, abs(m) / 15);
       _tsent = (h + 12) * 4 + abs(m) / 15;
@@ -528,19 +529,26 @@ class TzPage : public HalfHourPage {
     int32_t _tsent = -1;
     static const char* tzLabel(uint8_t c, int16_t v){ static char b[6]; if(c) snprintf(b, sizeof(b), "%02d", v * 15); else snprintf(b, sizeof(b), "%+d", v - 12); return b; }
 };
-static const char* vNow(){ static char b[24]; strftime(b, sizeof(b), "%H:%M:%S", &network.timeinfo); return b; }
-/*  Літній час (26.10.2026): пояс на барабані — зимовий, а влітку годинник сам додає годину.  */
+/*  Літній час (26.10.2026): пояс на барабані — зимовий, а влітку годинник сам додає годину.
+    Першим рядком — котра зараз година (раніше окремий рядок «Зараз»).  */
 static const char* vTzNote(){
-  if(extras.s.dstMode != 1) return "години від Гринвіча (Київ: +2 взимку, +3 влітку)";
-  time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt);
-  return t > 1600000000 && lt.tm_isdst > 0 ? "пояс зимовий (Київ +2); зараз літній, +1 година"
-                                           : "пояс зимовий (Київ +2); улітку додасться година";
+  static char b[128];
+  char now[12]; strftime(now, sizeof(now), "%H:%M:%S", &network.timeinfo);
+  const char* d;
+  if(extras.s.dstMode != 1) d = tr("години від Гринвіча (Київ: +2 взимку, +3 влітку)");
+  else{
+    time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt);
+    d = tr(t > 1600000000 && lt.tm_isdst > 0 ? "пояс зимовий (Київ +2); зараз літній, +1 година"
+                                             : "пояс зимовий (Київ +2); улітку додасться година");
+  }
+  snprintf(b, sizeof(b), tr("зараз %s\n%s"), now, d);
+  return b;
 }
-static Item s_tzItems[] = { iGap(136), iInfo("Зараз", vNow),
+static Item s_tzItems[] = { iGap(104),
   iSwitch("Літній час — сам", IC_SUN, C_ORANGE, [](){ return (int32_t)(extras.s.dstMode == 1); },
           [](int32_t v){ extras.s.dstMode = v ? 1 : 0; extras.changed(); config.applyTz(); }),
-  iNote(vTzNote, 24) };
-static TzPage s_tz(s_tzItems, 4);
+  iNote(vTzNote, 36) };
+static TzPage s_tz(s_tzItems, 3);
 Page& pgTz = s_tz;
 
 /*  =================== «Обране» =================== */
@@ -554,14 +562,17 @@ class FavPage : public Page {
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override;
     void tap(int16_t id, int16_t x, int16_t y) override;
     bool hold(int16_t id) override;
-    int16_t height() override { return 4 + 2 * 78 + 50 + 8 + 16; }   /* підказка внизу — у два рядки */
+    /*  Усе на один екран (власник 02.11.2026: «частина меню не влазить»): клітинки 60 замість 72, рядок
+        перемикача 42, підказка — одним рядком. Було 234 — останні рядки підказки ховались під краєм.  */
+    int16_t height() override { return CH; }
   private:
     uint16_t* _logo[FAV_N] = { nullptr };
     bool _logoOk[FAV_N] = { false };
     volatile bool _reload = false;
     uint32_t _sig = 0, _sigT = 0;
     void _load();
-    static Rect cell(uint8_t i){ int16_t w = (CWID - 16) / 3; return Rect(MX + (i % 3) * (w + 8), 4 + (i / 3) * 78, w, 72); }
+    static constexpr int16_t CELL_H = 60, CELL_P = 64, SW_Y = 4 + 2 * CELL_P + 2, SW_H = 42;
+    static Rect cell(uint8_t i){ int16_t w = (CWID - 16) / 3; return Rect(MX + (i % 3) * (w + 8), 4 + (i / 3) * CELL_P, w, CELL_H); }
 };
 
 static uint32_t crc32s(const char* s){
@@ -595,14 +606,14 @@ void FavPage::draw(Gfx& g){
     const FavItem& f = extras.fav[i];
     if(!f.url[0]){
       g.frame(r.x, r.y, r.w, r.h, 14, C_LINE, 1);
-      icon(g, IC_PLUS, r.x + r.w / 2, r.y + 28, C_TXT2, C_BG);
-      g.text(r.x + r.w / 2, r.y + 56, "додати", F_SM, C_TXT2, AL_C);
+      icon(g, IC_PLUS, r.x + r.w / 2, r.y + 24, C_TXT2, C_BG);
+      g.text(r.x + r.w / 2, r.y + 50, "додати", F_SM, C_TXT2, AL_C);
       continue;
     }
     bool on = playing == (int8_t)i;
     g.box(r.x, r.y, r.w, r.h, 14, C_SURF);
     if(on) g.frame(r.x, r.y, r.w, r.h, 14, C_ACC, 2);
-    const int16_t ls = 34, lx = r.x + 9, ly = r.y + 9;
+    const int16_t ls = 34, lx = r.x + 9, ly = r.y + 7;
     if(_logoOk[i] && _logo[i]){
       /*  логотип 45×45 зменшуємо до 34×34 найближчим сусідом  */
       static uint16_t* small = (uint16_t*)heap_caps_malloc(34 * 34 * 2, MALLOC_CAP_SPIRAM);
@@ -625,17 +636,16 @@ void FavPage::draw(Gfx& g){
       static const uint8_t H[3] = { 9, 14, 6 };
       for(uint8_t k = 0; k < 3; k++) g.line(r.x + r.w - 22 + k * 5, r.y + 26, r.x + r.w - 22 + k * 5, r.y + 26 - H[k], 2.6f, C_ACC);
     }
-    g.text(r.x + 9, r.y + 62, f.name, F_SMB, on ? C_ACC : C_TXT, AL_L, r.w - 16);
+    g.text(r.x + 9, r.y + 54, f.name, F_SMB, on ? C_ACC : C_TXT, AL_L, r.w - 16);
   }
   /*  рядок обраного на головному  */
-  int16_t y = 4 + 2 * 78 + 2;
-  if(g.visible(MX, y, CWID, 44)){
-    g.box(MX, y, CWID, 44, R_CARD, C_SURF);
-    g.text(MX + 14, y + 26, "Показувати на головному", F_ROW, C_TXT, AL_L, CWID - 80);
-    drawSwitch(g, MX + CWID - 52, y + 10, extras.s.favHide ? 0 : 1);
+  const int16_t y = SW_Y;
+  if(g.visible(MX, y, CWID, SW_H)){
+    g.box(MX, y, CWID, SW_H, R_CARD, C_SURF);
+    g.text(MX + 14, y + 25, "Показувати на головному", F_ROW, C_TXT, AL_L, CWID - 80);
+    drawSwitch(g, MX + CWID - 52, y + 9, extras.s.favHide ? 0 : 1);
   }
-  g.text(SW / 2, y + 62, "торкніться порожньої — додати станцію, що грає;", F_SM, C_TXT2, AL_C, CWID);
-  g.text(SW / 2, y + 77, "утримайте — прибрати", F_SM, C_TXT2, AL_C, CWID);
+  g.text(SW / 2, y + SW_H + 16, "порожня — додати станцію, що грає; утримати — прибрати", F_SM, C_TXT2, AL_C, CWID);
 }
 
 void FavPage::tick(uint32_t now){
@@ -648,8 +658,7 @@ void FavPage::tick(uint32_t now){
 
 int16_t FavPage::hit(int16_t x, int16_t y, Rect& r, uint8_t& radius){
   for(uint8_t i = 0; i < FAV_N; i++){ Rect c = cell(i); if(c.has(x, y)){ r = c; radius = 14; return i; } }
-  int16_t yy = 4 + 2 * 78 + 2;
-  if(y >= yy && y < yy + 44){ r = Rect(MX, yy, CWID, 44); radius = R_CARD; return 10; }
+  if(y >= SW_Y && y < SW_Y + SW_H){ r = Rect(MX, SW_Y, CWID, SW_H); radius = R_CARD; return 10; }
   return -1;
 }
 

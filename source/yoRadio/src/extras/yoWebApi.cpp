@@ -274,7 +274,7 @@ static void onState(AsyncWebServerRequest* r){
   /*  звук: еквалайзер і обробка  */
   o.k("snd"); o.put('{');
   o.kn("on", s.eqOn); o.kn("preset", s.eqPreset); o.kn("loud", s.eqLoud); o.kn("guard", s.eqGuard);
-  o.kn("vb", s.vbass); o.kn("roomOn", s.eqRoomOn); o.kn("bal", config.store.balance); o.kn("vmax", s.volMax);
+  o.kn("vb", s.vbass); o.kn("roomOn", s.eqRoomOn); o.kn("bal", config.store.balance); o.kn("vmax", s.volMax); o.kn("roomDac", s.eqRoomDac);
   o.arr("eq");   for(uint8_t i = 0; i < EQ_BANDS; i++){ o.sep(); o.num(s.eq[i]); }     o.put(']');
   o.arr("room"); for(uint8_t i = 0; i < EQ_BANDS; i++){ o.sep(); o.num(s.eqRoom[i]); } o.put(']');
   o.kn("pre10", (long long)lroundf(yoDsp.preampDb() * 10));
