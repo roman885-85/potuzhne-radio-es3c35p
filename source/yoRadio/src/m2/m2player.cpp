@@ -462,6 +462,15 @@ void Player::_drawCard(Gfx& g, uint32_t now){
   }
 }
 
+/*  IP-адреса на головному екрані (Розробник › «IP-адреса на екрані»): куди заходити з браузера. У мережі — адреса
+    від роутера, у режимі точки доступу — власна; без мережі — нічого. Показ зник разом зі старим виглядом yoRadio
+    (рядок гучності й IP), а перемикач лишився й нічого не міняв — власник 02.11.2026: «не працює».  */
+static uint32_t ipNow(){
+  if(extras.s.noIp) return 0;
+  if(network.status == SOFT_AP) return (uint32_t)WiFi.softAPIP();
+  return WiFi.status() == WL_CONNECTED ? (uint32_t)WiFi.localIP() : 0;
+}
+
 void Player::_drawClock(Gfx& g){
   if(!g.visible(0, CLK_Y, SW, CLK_H)) return;
   const struct tm& t = network.timeinfo;
@@ -479,8 +488,10 @@ void Player::_drawClock(Gfx& g){
   char b[48];                                   /* кирилиця — по два байти на літеру */
   if(ok) snprintf(b, sizeof(b), "%02d:%02d", t.tm_hour, t.tm_min); else snprintf(b, sizeof(b), "--:--");
   int16_t w = g.text(12, CLK_Y + 48, b, F_CLOCK, C_TXT);
-  if(ok){ snprintf(b, sizeof(b), "%02d", t.tm_sec); g.text(18 + w, CLK_Y + 48, b, F_TITLE, C_TXT2); }
+  int16_t clkEnd = 12 + w;                      /* де закінчуються години з секундами — IP не має на них налазити */
+  if(ok){ snprintf(b, sizeof(b), "%02d", t.tm_sec); clkEnd = 18 + w + g.text(18 + w, CLK_Y + 48, b, F_TITLE, C_TXT2); }
   const int16_t rx = SW - 14;
+  int16_t ipR = rx, ipY = CLK_Y + 48;           /* без погоди — під датою, на рівні низу цифр годинника */
   if(ok){
     g.text(rx, CLK_Y + 12, WDAY[t.tm_wday % 7], F_ROWB, C_TXT, AL_R);
     snprintf(b, sizeof(b), "%d %s", t.tm_mday, tr(MON[t.tm_mon % 12]));
@@ -495,6 +506,7 @@ void Player::_drawClock(Gfx& g){
         на рядок налаштувань і поряд із написом виглядало завеликим.  */
     const float S = 0.8f;
     float cx = rx - tw - 17, cy = CLK_Y + 45;
+    ipR = (int16_t)(cx - 8 * S) - 8; ipY = CLK_Y + 52;   /* з погодою — ліворуч від значка, на рівні градусів */
     uint8_t ic = timekeeper.weatherIcon;
     const uint16_t cl = RGB(205, 210, 220), sun = C_ACC;
     auto sunny = [&](float x, float y, float s, uint16_t c){
@@ -515,6 +527,12 @@ void Player::_drawClock(Gfx& g){
     else if(ic == 6){ cloud(cx, cy - 3 * S, S, cl); const float xy[8] = { cx + 1 * S, cy + 3 * S, cx - 4 * S, cy + 10 * S, cx - 1 * S, cy + 10 * S, cx - 3 * S, cy + 15 * S }; g.line(xy[0], xy[1], xy[2], xy[3], 2, sun); g.line(xy[2], xy[3], xy[4], xy[5], 2, sun); g.line(xy[4], xy[5], xy[6], xy[7], 2, sun); }
     else if(ic == 7){ cloud(cx, cy - 3 * S, S, cl); for(uint8_t k = 0; k < 3; k++) g.circle(cx + (-5 + k * 5) * S, cy + 8 * S, 1.5f, 0xFFFF); }
     else if(ic == 8){ for(uint8_t k = 0; k < 3; k++) g.line(cx + (-8 + (k & 1) * 3) * S, cy + (-4 + k * 5) * S, cx + (8 - (k & 1) * 3) * S, cy + (-4 + k * 5) * S, 2, cl); }
+  }
+  if(const uint32_t a = ipNow()){
+    snprintf(b, sizeof(b), "%u.%u.%u.%u", (unsigned)(a & 255), (unsigned)(a >> 8 & 255), (unsigned)(a >> 16 & 255), (unsigned)(a >> 24));
+    /*  довга адреса поряд із погодою на 320 точок може не вміститися — тоді дрібнішим шрифтом  */
+    const GFXfont* f = ipR - Gfx::textW(b, F_SM) >= clkEnd + 8 ? F_SM : F_TINY;
+    g.text(ipR, ipY, b, f, C_TXT2, AL_R);
   }
 }
 
@@ -799,6 +817,7 @@ void Player::render(){
     /*  годинник  */
     const struct tm& t = network.timeinfo;
     uint32_t k = (uint32_t)t.tm_min * 61 + t.tm_hour * 3600 + t.tm_mday * 99991 + (timekeeper.weatherHave ? (int)lroundf(timekeeper.weatherTemp) * 7 + timekeeper.weatherIcon : 0);
+    k = k * 31 + ipNow();
     if(k != _sClock){ _sClock = k; _mark(0, CLK_Y, SW, CLK_H); }
     if((uint32_t)t.tm_sec != _sSec && !sermonOn()){ _sSec = t.tm_sec; _mark(120, CLK_Y + 20, 80, 36); }
     /*  третій рядок  */
