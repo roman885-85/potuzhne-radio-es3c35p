@@ -19,6 +19,12 @@ static volatile uint16_t s_inW = 0, s_inR = 0;
 static volatile bool s_peer = false;
 static char s_peerIp[16] = {0};
 static volatile uint32_t s_sent = 0, s_skipped = 0, s_conns = 0, s_stackFree = 0;
+/*  Знімок екрана (scrq). Раніше «scr» друкував 410 КБ base64 із головного циклу — там же й
+    декодер, тож звук стояв ~1,4 с на кожен знімок (02.11.2026 за вечір — двадцять пауз у
+    власника). Тепер головний цикл лише копіює кадр (~5 мс), а шле ця задача на ядрі 0.  */
+static uint16_t* s_snap = nullptr;
+static uint16_t s_snapW = 0, s_snapH = 0;
+static volatile bool s_snapReady = false;
 
 /*  Запис у кільце — з будь-якої задачі; мережі не чекає ніколи.  */
 static void ringPut(const uint8_t* b, size_t n){
@@ -82,6 +88,51 @@ static void ncSend(NetworkClient& cl, uint32_t& rd){
   }
 }
 
+bool yoNetConSnap(const uint16_t* fb, uint16_t w, uint16_t h){
+  if(!s_peer || !fb || s_snapReady) return false;
+  const size_t n = (size_t)w * h * 2;
+  if(!s_snap) s_snap = (uint16_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  if(!s_snap) return false;
+  memcpy(s_snap, fb, n);
+  s_snapW = w; s_snapH = h;
+  __sync_synchronize();
+  s_snapReady = true;
+  return true;
+}
+
+static bool ncWriteAll(NetworkClient& cl, const uint8_t* b, size_t n){
+  while(n){
+    const int w = cl.write(b, n);
+    if(w <= 0){ if(!cl.connected()) return false; vTaskDelay(1); continue; }
+    b += w; n -= w; s_sent += w;
+  }
+  return true;
+}
+
+/*  Рядки знімка — так само, як друкує «scr»: SCR_BEGIN W H, рядок пікселів RGB565 у base64, SCR_END.  */
+static void ncSnap(NetworkClient& cl){
+  static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  static char line[(480 * 2 + 2) / 3 * 4 + 2];
+  char h[40];
+  int k = snprintf(h, sizeof(h), "SCR_BEGIN %u %u\n", (unsigned)s_snapW, (unsigned)s_snapH);
+  if(!ncWriteAll(cl, (const uint8_t*)h, k)) return;
+  const size_t rb = (size_t)s_snapW * 2;
+  if(rb > 480 * 2) return;
+  for(uint16_t y = 0; y < s_snapH; y++){
+    const uint8_t* d = (const uint8_t*)(s_snap + (size_t)y * s_snapW);
+    size_t o = 0;
+    for(size_t i = 0; i < rb; i += 3){
+      const uint32_t v = d[i] << 16 | (i + 1 < rb ? d[i + 1] << 8 : 0) | (i + 2 < rb ? d[i + 2] : 0);
+      line[o++] = B64[(v >> 18) & 63]; line[o++] = B64[(v >> 12) & 63];
+      line[o++] = (i + 1 < rb) ? B64[(v >> 6) & 63] : '='; line[o++] = (i + 2 < rb) ? B64[v & 63] : '=';
+    }
+    line[o++] = '\n';
+    if(!ncWriteAll(cl, (const uint8_t*)line, o)) return;
+    if((y & 31) == 31) vTaskDelay(1);
+  }
+  ncWriteAll(cl, (const uint8_t*)"SCR_END\n", 8);
+}
+
 static void ncTask(void*){
   NetworkServer srv(NETCON_PORT);
   NetworkClient cl;
@@ -135,6 +186,7 @@ static void ncTask(void*){
             s_inW = w;
           }
         }
+        if(s_peer && s_snapReady){ ncSend(cl, rd); ncSnap(cl); s_snapReady = false; }
         if(s_peer) ncSend(cl, rd);
       }
     }

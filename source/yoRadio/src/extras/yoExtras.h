@@ -97,6 +97,8 @@ struct ExtStore {
                                                     стільки; у старому збереженому — 0, тобто 100 (без обмеження) */
   uint8_t  eqRoomDac;                            /* для якого аудіовиходу (dac) зміряно поправку під кімнату; до 02.11.2026
                                                     міряти можна було лише вбудований — у старому збереженому 0 і є він */
+  uint8_t  bassOld;                              /* обробка низу: 0 — м'яка (з 03.11.2026), 1 — як була до того; у старому
+                                                    збереженому 0 — тобто нова */
 };
 /*  Зовнішній ЦАП I2S — на вільні виводи роз'ємів; які саме — у myoptions.h для
     кожної плати (ES3C28P: 14/21/2, MUTE IO3; ES3C35P: 45/46/43, MUTE RXD0/IO44).  */
@@ -192,6 +194,7 @@ class YoExtras {
     void     extAmp(bool sound);
     void     extAmpKick(bool fromPlayer);   /* звук іде просто зараз (fromPlayer: з плеєра — тоді й гучність не 0) */
     bool     extAmpOn() const { return _extOn; }   /* зараз «звук» */
+    void     rateChange();              /* частота I2S от-от зміниться — тихо, поки ЦАП не впіймає такт */
     void     extMuteApply();            /* змінили режим — виставити вивід заново (0 — відпустити) */
     uint16_t batRaw();                 /* разове читання, мВ */
     void     batSim(int8_t pct, int8_t chg);   /* перевірка: підставити рівень, -1 — справжній */
@@ -203,6 +206,7 @@ class YoExtras {
     /*  Прокинулось таймером перед будильником (з «вимкнено»): тихий старт —
         без заставки, звуку, підсвітки й автостарту; далі або знову сон, або дзвінок.  */
     static bool wokeForAlarm();
+    static bool bootAutoPlay();          /* грати останню станцію після старту (Автостарт, причина старту) */
     static bool alarmQuiet();            /* зараз тихе чекання будильника (екран темний, радіо «вимкнене») */
     uint32_t lowBatBeat() const { return _lowBeat; }   /* росте з кожним попередженням про батарею (раз на хвилину) */
 
@@ -218,6 +222,7 @@ class YoExtras {
   private:
     volatile bool _extOn = false;       /* MUTE зовнішнього підсилювача: зараз «звук» */
     volatile uint32_t _extAt = 0;       /* коли востаннє йшов звук (extAmpKick) */
+    volatile uint32_t _extHold = 0;     /* до цієї миті MUTE не знімати: ЦАП ловить новий такт (rateChange) */
     void          _extAmpLoop(uint32_t now);   /* звук не йде EXT_HOLD_MS — тихо */
     bool          _extSet = false;      /* вивід уже виставлено (перший запис — завжди) */
     bool     _dirty = false;

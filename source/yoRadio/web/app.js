@@ -1473,6 +1473,8 @@ VIEWS.sound = page => {
   const guard = seg([[0, 'Вимк'], [1, 'М\'який'], [2, 'Сильний']], -1, v => { setx({ eqGuard: v }); plotSoon(); });
   const vb = seg([[0, 'Вимк'], [1, '1'], [2, '2'], [3, '3']], -1, v => setx({ vbass: v }));
   const loud = seg([[0, 'Вимк'], [1, 'М\'яка'], [2, 'Сильна']], -1, v => { setx({ eqLoud: v }); plotSoon(); });
+  /*  «Низ» (03.11.2026): м'який — стеля підйому, зріз інфразвуку, м'яка поправка під кімнату; «як був» — попередня обробка  */
+  const bass = seg([[0, 'М\'який'], [1, 'Як був']], -1, v => { setx({ bassOld: v }); plotSoon(); });
   const balOut = h('output');
   let balT = 0;
   const bal = range(-16, 16, 0, v => { balOut.textContent = v ? (v < 0 ? 'ліворуч ' + -v : 'праворуч ' + v) : 'по центру'; clearTimeout(balT); balT = setTimeout(() => setx({ bal: v }), 150); });
@@ -1494,8 +1496,9 @@ VIEWS.sound = page => {
       row('Захист динаміка', 'зрізає низ, якого маленький динамік не відтворює, а лише хрипить', guard),
       row('Віртуальний бас', 'бас, що зрізано, передається гармоніками — вухо саме «добудовує» низ', vb),
       row('Тонкомпенсація', 'на тихій гучності трохи підіймає низ і верх, як їх чує вухо', loud),
+      row('Низ', 'м\'який — без гуркоту й рипіння: разом низ піднімається не більше ніж на 10 дБ, інфразвук зрізано, поправка під кімнату на низах м\'якша; «як був» — обробка до 3 листопада', bass),
       h('div', { class: 'fld', style: { marginTop: '8px' } }, h('span', null, 'Баланс'), h('div', { class: 'rng' }, bal, balOut)),
-      h('p', { class: 'note' }, 'Захист і тонкомпенсація — для вбудованого динаміка; для зовнішнього ЦАП захист вимикається сам.')),
+      h('p', { class: 'note' }, 'Захист — для вбудованого динаміка; із зовнішнім ЦАП замість нього зрізається лише інфразвук (нижче 25 Гц), коли низ м\'який.')),
     card('Під кімнату',
       h('p', { class: 'note', style: { marginTop: 0 } }, 'Радіо зіграє тони від 63 Гц до 16 кГц і послухає себе своїм мікрофоном. Спершу перевіряє, чи мікрофон і динамік не спотворюють звук (інакше зменшує підсилення чи гучність тонів), тоді ставить поправку й міряє ще раз — уже з нею, доправляючи те, що лишилось. Якщо рівнішим звук не став, поправка не вмикається. Близько хвилини; у кімнаті має бути тихо, грати в цей час нічого не буде. Тони йдуть туди ж, куди й музика: із зовнішнім ЦАП — у ваші колонки, з гучністю музики (не гучніше); якщо мікрофон їх не почує, зробіть гучніше. Поправка діє лише на тому виході, де її зміряли.'),
       h('div', { class: 'bar', style: { marginTop: '10px' } }, roomBtn, roomClr), roomBar, roomMsg, roomBands,
@@ -1519,7 +1522,7 @@ VIEWS.sound = page => {
       presets.set(d.preset);
       on.firstChild.checked = !!d.on;
       geq.classList.toggle('off', !d.on);
-      guard.set(d.guard); vb.set(d.vb); loud.set(d.loud);
+      guard.set(d.guard); vb.set(d.vb); loud.set(d.loud); if (d.bassOld !== undefined) bass.set(d.bassOld);
       if (!held(bal)) { bal.value = d.bal; fillRange(bal); balOut.textContent = d.bal ? (d.bal < 0 ? 'ліворуч ' + -d.bal : 'праворуч ' + d.bal) : 'по центру'; }
       if (d.vmax && !held(vmax)) { vmax.value = d.vmax; fillRange(vmax); vmOut.textContent = d.vmax + ' %'; }
       roomOn.firstChild.checked = !!d.roomOn;
@@ -1531,9 +1534,11 @@ VIEWS.sound = page => {
       const has = d.room.some(v => v);
       roomClr.hidden = !has;
       roomBands.textContent = '';
-      if (has) d.room.forEach((v, i) => roomBands.append(h('span', { class: v ? '' : 'z' }, EQ_LBL[i] + ' ', h('b', null, (v > 0 ? '+' : '') + v))));
+      /*  смуги — те, що справді стоїть (м'який низ згладжує й обмежує зміряне); поправку вимкнено — зміряне  */
+      const ra = d.roomOn && d.roomA ? d.roomA : d.room;
+      if (has) ra.forEach((v, i) => roomBands.append(h('span', { class: v ? '' : 'z' }, EQ_LBL[i] + ' ', h('b', null, (v > 0 ? '+' : '') + v))));
       preNote.textContent = `Попереднє ослаблення ${(-d.pre10 / 10).toFixed(1).replace(".", ",")} дБ — щоб підйоми не перевантажували звук · обробка: ${(d.us100 / 100).toFixed(1).replace(".", ",")} мкс на відлік`;
-      const s2 = d.eq.join() + d.on + d.guard + d.loud + d.roomOn + d.room.join();
+      const s2 = d.eq.join() + d.on + d.guard + d.loud + d.roomOn + d.room.join() + d.bassOld;
       if (s2 !== sig) { sig = s2; plotSoon(); }
       if (d.rst !== rst) { if (rst === 2 && d.rst >= 3) plotSoon(); rst = d.rst; }
       $('#dacnow').textContent = 'Зараз: ' + dacOf(S.dev.dac).n + ' — ' + dacOf(S.dev.dac).k;

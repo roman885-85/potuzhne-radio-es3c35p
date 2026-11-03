@@ -681,7 +681,7 @@ void MyNetwork::_staUp(){
     _bootNoNet = false;
     config.initPlaylistMode();
     player.lockOutput = false;
-    if(config.store.smartstart == 1 && !YoExtras::wokeForAlarm()) player.sendCommand({PR_PLAY, config.lastStation()});   /* перед будильником — тихо */
+    if(YoExtras::bootAutoPlay()) player.autoPlay(config.lastStation());   /* перед будильником — тихо */
     if (network_on_connect) network_on_connect();
     pm.on_connect();
   }

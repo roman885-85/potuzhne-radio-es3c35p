@@ -43,6 +43,7 @@ uint8_t  st77922Rot();                   /* 1 — USB праворуч (як н�
 uint32_t st77922Hz();
 void     lcdShadow(bool on);             /* копія кадру в PSRAM для знімків екрана */
 bool     lcdShadowOn();
+const uint16_t* lcdFrame();               /* кадр у PSRAM (480×320) — для знімка без паузи звуку (scrq) */
 void     lcdStats(bool reset);           /* скільки пішло в панель і скільки коштував поворот */
 void     lcdRotPie(int8_t on);           /* 1 — поворот векторними інструкціями, 0 — звичайний код, -1 — показати */
 bool     lcdRotCheck();                  /* звірити векторний поворот зі звичайним на випадкових смугах */

@@ -12,6 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import con
 from PIL import Image
 
+def link_is_net(link, net):
+    """Чи йде з'єднання по Wi-Fi (con.open_link сам іде в мережу, коли USB-порту немає)."""
+    return net or getattr(link, "is_net", False) or type(link).__name__.lower().find("net") >= 0
+
 def main():
     args = sys.argv[1:]
     net = False; host = None; rest = []
@@ -28,7 +32,9 @@ def main():
     out = next((a for a in rest if not a.startswith('--')), 'scr.png')
     link = con.open_link(net, host)
     link.read_for(0.3)
-    link.send(b"scr\n")
+    # по Wi-Fi — «scrq»: радіо лише копіює кадр, а шле задача консолі, тож звук не стоїть
+    # (старий «scr» друкував кадр із головного циклу — пауза звуку ~1,4 с на знімок)
+    link.send(b"scrq\n" if link_is_net(link, net) else b"scr\n")
     buf = link.read_for(60, until='SCR_END')
     if not os.environ.get('KEEP') and '--keep-shadow' not in rest:
         link.send(b"shadow 0\n"); link.read_for(0.3)

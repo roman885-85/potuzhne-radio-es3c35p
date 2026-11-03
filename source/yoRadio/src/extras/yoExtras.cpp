@@ -1,4 +1,5 @@
 #include "yoExtras.h"
+#include "yoATrace.h"
 #include "yoSfx.h"
 #include <Preferences.h>
 #include <SPIFFS.h>
@@ -110,6 +111,7 @@ void YoExtras::_load(){
   s.dacPwrOld = 0;                       /* ключ живлення модуля прибрано (02.11.2026): вивід тепер MUTE */
   if(s.extMute > 2) s.extMute = 0;
   if(s.volMax < 5 || s.volMax > 100) s.volMax = 100;
+  if(s.bassOld > 1) s.bassOld = 0;
   /*  Літній час (26.10.2026, прохання власника): типово — сам, за правилом Європи, а пояс
       у налаштуваннях тепер зимовий. Хто влітку ставив +3 (Київ), отримує +2 і далі
       перехід сам: улітку однаково +3, узимку — +2, як і має бути.  */
@@ -296,6 +298,7 @@ void YoExtras::extAmp(bool sound){
   if(!_extSet){ pinMode(EXT_MUTE_PIN, OUTPUT); _extSet = true; }
   const bool lvl = (s.extMute == 1) ? on : !on;          /* 1: тихо — низьким (звук = високий); 2: тихо — високим */
   digitalWrite(EXT_MUTE_PIN, lvl ? HIGH : LOW);
+  atrace::ev(on ? "MUTE знято" : "MUTE");
   Serial.printf("##AMP#\tзовнішній підсилювач: %s (" EXT_MUTE_NAME " = %d) на %lu мс\n", on ? "звук" : "тихо", lvl ? 1 : 0, (unsigned long)millis());
 #else
   (void)sound;
@@ -313,9 +316,25 @@ void YoExtras::extAmpKick(bool fromPlayer){
     if(v <= 0) return;                   /* гучність 0 — звуку немає: хай глушиться */
   }
   _extAt = millis() | 1;
+  if(_extHold){ if((int32_t)(millis() - _extHold) < 0) return; _extHold = 0; }   /* ЦАП ще ловить такт */
   if(!_extOn) extAmp(true);
 #else
   (void)fromPlayer;
+#endif
+}
+
+/*  Зміна частоти I2S (проповідь 48 кГц → станція 44,1 кГц). Власник 03.11.2026: «при переключенні на радіо
+    після проповідей — короткі гучні артефакти перед початком нормального звуку». atrace показав: цифровий
+    звук у цю мить — тиша (−99 дБ, затихання), а мікрофон чує −25 дБ (фон −55…−67) через 9 мс після зміни
+    частоти; MUTE знімався вже через 6 мс. Зі станції на станцію (частота та сама) зняття MUTE не клацає.
+    Тобто клацає ЦАП, поки ловить новий такт. Тепер MUTE — ще до зміни і 200 мс після: нарощування звуку
+    (0,7 с) однаково починається з нуля, а ЦАП устигає.  */
+#define EXT_RATE_HOLD_MS 200
+void YoExtras::rateChange(){
+#if EXT_DAC
+  if(!s.extMute || s.dac == 0) return;
+  _extHold = (millis() + EXT_RATE_HOLD_MS) | 1;
+  if(_extOn) extAmp(false);
 #endif
 }
 
@@ -327,6 +346,7 @@ void YoExtras::_extAmpLoop(uint32_t now){
     справді грає: після зупинки ще встигала проскочити остання пачка, і MUTE знімався на 0,3 с
     (на платі: тихо → через 6 мс звук → тихо).  */
 void yoAudioOut(){ if(extras.s.extMute && player.status() == PLAYING) extras.extAmpKick(true); }
+void yoRateChange(){ extras.rateChange(); }
 
 void YoExtras::extMuteApply(){
 #if EXT_DAC
@@ -497,6 +517,18 @@ static bool s_wokeAlarm = false;
 static bool s_alarmQuiet = false;
 bool YoExtras::wokeByTouch(){ return s_wokeTouch; }
 bool YoExtras::wokeForAlarm(){ return s_wokeAlarm; }
+
+/*  Автостарт (власник 03.11.2026: «при включенні радіо має бути автозапуск останньої станції»).
+    Увімкнули живленням, кнопкою скидання чи збудили дотиком — грає остання станція завжди, навіть
+    коли перед вимкненням стояла (зупинили, обірвався потік: тоді smartstart = 0, і радіо мовчало —
+    так було 03.11 о 19:06). Після перезавантаження програмою (оновлення), сторожем чи збоєм —
+    як і було: грає, лише якщо грало. «Автостарт» вимкнено (2) чи будить будильник — не грає.  */
+bool YoExtras::bootAutoPlay(){
+  if(config.store.smartstart == 2 || s_wokeAlarm) return false;
+  const esp_reset_reason_t r = esp_reset_reason();
+  if(r == ESP_RST_POWERON || r == ESP_RST_EXT || r == ESP_RST_DEEPSLEEP) return true;
+  return config.store.smartstart == 1;
+}
 bool YoExtras::alarmQuiet(){ return s_alarmQuiet; }
 
 int64_t YoExtras::_alarmSleepSecs(){

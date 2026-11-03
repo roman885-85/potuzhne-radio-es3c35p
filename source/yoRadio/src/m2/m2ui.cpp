@@ -878,6 +878,13 @@ void Menu::render(){
     _setScroll(p, _scrollF);
     if(_trOn && _trN < TR_N){ _trT[_trN] = (uint16_t)(now - _trT0); _trS[_trN] = p->scrollP; _trG[_trN] = (int16_t)lroundf(uiPf(_dTarget)); _trN++; }
   }else _dT = 0;
+  /*  Сторінка стала коротшою, коли її вже прогорнули (оновився список мереж, станцій, проповідей;
+      сховався рядок): позиція лишалась за кінцем — вміст висів угорі з порожнечею внизу, доки не торкнешся.
+      Тепер повертаємо його на місце тим самим накатом, що й після відпускання пальця.  */
+  if(!_fling && !_spring && _tm == TM_NONE && !_tDir && p->scrollable()){
+    const int16_t mx = _maxScroll(p);
+    if(p->scroll > mx || p->scroll < 0){ _scrollF = p->scroll; _vel = 0; _fling = true; }
+  }
   /*  інерція прокрутки й пружина на краях  */
   if(_fling && _tm != TM_SCROLL){
     static uint32_t ft = 0;

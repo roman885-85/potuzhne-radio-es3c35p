@@ -41,6 +41,7 @@ namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "../extras/yoSpectrum.h"
 #include "../extras/yoAirplay.h"
 #include "../extras/yoHwTest.h"
+#include "../extras/yoATrace.h"
 #if TS_MODEL==TS_MODEL_ST77922
   #include "../ST77922_Touch/yoST77922Touch.h"
 #endif
@@ -127,6 +128,20 @@ void yodbgScreenshot(){
   }
   Serial.println("SCR_END");
   display.unlock();
+}
+
+/*  Знімок без паузи звуку — для консолі по Wi-Fi (scr.py --net): тут лише копія кадру,
+    шле задача консолі (extras/yoNetCon). Без клієнта по Wi-Fi — звичайний «scr».  */
+void yodbgScreenshotQuick(){
+#if DSP_MODEL==DSP_ST77922
+  shadowFill();
+  display.lock();
+  delay(30);                  /* задача екрана домальовує почате */
+  const bool ok = yoNetConSnap(lcdFrame(), DSP_W, DSP_H);
+  display.unlock();
+  if(ok) return;
+#endif
+  yodbgScreenshot();
 }
 
 static void addStation(const char* name, const char* url){
@@ -231,6 +246,9 @@ void yodbgLoop(){
     else if(!strncmp(buf,"tslog",5))  { extern YoST77922Touch ts; ts.logStart(buf[5] == ' ' ? (uint16_t)atoi(buf + 6) : 10); }
 #endif
     else if(!strcmp(buf,"scr"))       yodbgScreenshot();
+    else if(!strcmp(buf,"scrq"))      yodbgScreenshotQuick();
+    else if(!strcmp(buf,"atrace dump")) atrace::dump();
+    else if(!strncmp(buf,"atrace",6) && (buf[6] == 0 || buf[6] == ' ')) atrace::arm(buf[6] == ' ' ? (uint32_t)atoi(buf + 7) : 6000);
 #if DSP_MODEL==DSP_ST77922
     /*  ES3C35P: екран ST77922 — статистика виводу, поворот векторними інструкціями, тінь для знімків  */
     else if(!strncmp(buf,"lcdstat",7)) lcdStats(buf[7] == ' ' && buf[8] == 'r');
@@ -736,6 +754,7 @@ void yodbgLoop(){
       extras.s.micOn = atoi(buf+6) ? 1 : 0; extras.changed(); mic.apply();
       Serial.printf("мікрофон %s\n", extras.s.micOn ? "увімкнено" : "вимкнено");
     }
+    else if(!strncmp(buf,"airplay click",13)){ extern volatile bool yoApClick; yoApClick = buf[13] != ' ' || buf[14] != '0'; Serial.printf("AIRPLAY CLICK %d\n", (int)yoApClick); }
     else if(!strcmp(buf,"airplay")){
       airplay.stat();
     }
@@ -916,10 +935,12 @@ void yodbgLoop(){
     else if(!strncmp(buf,"m2 ",3)){
       /*  нове меню одразу на сторінці: m2 <номер> (0 меню, 1 параметри, 2 екран, 3 будильник, 4 обране, 5 проповіді,
           6 про радіо, 7 живлення, 8 пояс, 9 еквалайзер, 10 обробка, 11 кімната, 12 мікрофон, 13 жести, 14 присутність,
-          15 wi-fi, 16 відомі, 17 розробник, 18 заставка й звуки, 19 аудіовихід, 20 ніч з)  */
+          15 wi-fi, 16 відомі, 17 розробник, 18 заставка й звуки, 19 аудіовихід, 20 ніч з, 21 ніч до, 22 схема ЦАП,
+          23 мережа, 24 оновлення, 25 станції)  */
       static m2::Page* const P[] = { &m2::pgPult, &m2::pgSettings, &m2::pgScreen, &m2::pgAlarm, &m2::pgFav, &m2::pgSermons,
         &m2::pgInfo, &m2::pgPower, &m2::pgTz, &m2::pgEq, &m2::pgSound, &m2::pgRoom, &m2::pgMic, &m2::pgGest, &m2::pgPres,
-        &m2::pgWifi, &m2::pgSaved, &m2::pgDev, &m2::pgDevSnd, &m2::pgDac, &m2::pgNightFrom };
+        &m2::pgWifi, &m2::pgSaved, &m2::pgDev, &m2::pgDevSnd, &m2::pgDac, &m2::pgNightFrom, &m2::pgNightTo, &m2::pgDacInfo,
+        &m2::pgNet, &m2::pgUpdate, &m2::pgStations };
       int n = atoi(buf + 3);
       if(n >= 0 && n < (int)(sizeof(P) / sizeof(P[0]))){
         if(!m2::M.active()) m2::M.open(n == 0 ? P[0] : &m2::pgPult);

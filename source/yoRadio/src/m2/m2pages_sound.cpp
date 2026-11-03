@@ -68,7 +68,8 @@ void EqPage::draw(Gfx& g){
         float a = yv < zy ? yv : zy, bb = yv < zy ? zy : yv;
         g.box(cx - 2, (int16_t)a, 4, (int16_t)(bb - a) + 1, 2, ac);
       }
-      if(e.eqRoomOn && e.eqRoom[b]) g.circle(cx + 7, yOf((e.eqOn ? v : 0) + e.eqRoom[b]), 2.3f, C_TEAL);
+      { const float ra = yoDsp.roomApplied(b);            /* поправка, яку справді ставимо (м'який низ її згладжує) */
+        if(e.eqRoomOn && fabsf(ra) >= 0.5f) g.circle(cx + 7, yOf((e.eqOn ? v : 0) + ra), 2.3f, C_TEAL); }
       g.circle(cx, yv, _drag == b ? 8.5f : 7, e.eqOn ? C_KNOB : C_TXT2);
       g.text(cx, CY0 + CHH - 6, EQ_FRQ[b], F_TINY, C_TXT2, AL_C);
       if(_drag == b){
@@ -159,6 +160,7 @@ Page& pgEq = s_eq;
 static const char* const GUARD_LBL[3] = { "вимк", "м'який", "сильний" };
 static const char* const VB_LBL[4]    = { "вимк", "1", "2", "3" };
 static const char* const LOUD_LBL[3]  = { "вимк", "м'яка", "сильна" };
+static const char* const BASS_LBL[2]  = { "м'який", "як був" };
 static void sndChanged(){ extras.changed(); yoDsp.changed(); }
 /*  Захист динаміка діє лише там, де динамік: вбудований чи MAX98357A. З ЦАП на лінію
     перемикач нічого не міняв — власник 26.10.2026: «функції обробки не працюють». Кажемо прямо.  */
@@ -181,6 +183,12 @@ static Item s_sndItems[] = {
   iNote(vGuardNote, 22),
   iSeg("Віртуальний бас", VB_LBL, 4, [](){ return (int32_t)extras.s.vbass; }, [](int32_t v){ extras.s.vbass = v; sndChanged(); }),
   iSeg("Тонкомпенсація, коли тихо", LOUD_LBL, 3, [](){ return (int32_t)extras.s.eqLoud; }, [](int32_t v){ extras.s.eqLoud = v; sndChanged(); }),
+  /*  «Низ» (власник 03.11.2026: «замість м'якого басу різкі завали й рипіння по низах»): м'який — нова обробка
+      (extras/yoDsp: стеля підйому, зріз інфразвуку, м'яка поправка під кімнату, чистіший віртуальний бас);
+      «як був» — попередня, щоб повернути одним дотиком  */
+  iSeg("Низ", BASS_LBL, 2, [](){ return (int32_t)extras.s.bassOld; }, [](int32_t v){ extras.s.bassOld = (uint8_t)v; sndChanged(); }),
+  iNote([](){ return extras.s.bassOld ? "як до 03.11: без стелі й зрізу, повна поправка під кімнату"
+                                      : "без гуркоту й рипіння: підйом низу до +10 дБ"; }, 22),
   iSection("СТЕРЕО"),
   iSlider("Баланс", -16, 16, [](){ return (int32_t)config.store.balance; }, [](int32_t v){ config.setBalance((int8_t)v); }),
 };
@@ -202,8 +210,9 @@ static void roomChart(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
   bool has = roomHas();
   for(uint8_t b = 0; b < 10; b++){
     const int16_t cx = x + 6 + (w - 12) * b / 10 + (w - 12) / 20;
-    int v = e.eqRoom[b];
-    if(v){
+    /*  стовпчик — те, що справді стоїть; поки поправку вимкнено — зміряне (сірим)  */
+    const float v = e.eqRoomOn ? yoDsp.roomApplied(b) : (float)e.eqRoom[b];
+    if(fabsf(v) >= 0.5f){
       int16_t yv = zy - (int16_t)lroundf(v * 2.5f);
       int16_t a = yv < zy ? yv : zy, bb = yv < zy ? zy : yv;
       g.box(cx - 5, a, 10, bb - a + 1, 3, e.eqRoomOn ? C_TEAL : C_TXT3);

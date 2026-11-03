@@ -1,4 +1,5 @@
 #include "yoMic.h"
+#include "yoATrace.h"
 #include <driver/i2s.h>
 #include <math.h>
 #include "esp_heap_caps.h"
@@ -31,7 +32,7 @@ bool YoMic::listening() const {
       зовнішній ЦАП узагалі не чіпаються. Те саме доводить і давня вада, яку
       довелось лікувати окремо: вбудований динамік продовжував грати разом із
       зовнішнім ЦАПом — а це можливо лише коли такти до кодека доходять.  */
-  return running() && extras.s.micOn;
+  return running() && (extras.s.micOn || atrace::on);   /* atrace: мікрофон чує, що звучить у кімнаті */
 }
 
 MicGesture YoMic::takeGesture(){
@@ -131,6 +132,7 @@ void YoMic::_run(){
         отримувала часу 5 с — і сторож перезавантажував радіо. Краще втратити
         шматочок звуку з мікрофона.  */
     if((reads & 15) == 15) vTaskDelay(1);
+    if(atrace::on){ int32_t pk = 0; for(size_t i = 0; i < got / 4; i++){ const int32_t v = abs((int32_t)raw[2*i]); if(v > pk) pk = v; } atrace::mic(pk); }
     uint32_t rate = player.getSampleRate();
     if(rate < 8000) rate = 44100;
     if(rate != firRate){ _firDesign(rate); firRate = rate; ph = 0; }

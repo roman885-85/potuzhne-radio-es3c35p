@@ -49,8 +49,9 @@ class YoAirplay {
     void _accept();
     void _read();
     void _request(char* req, size_t hdrLen, char* body, size_t bodyLen);
-    void _packet(uint8_t* p, uint16_t n, uint8_t kind);
-    void _store(uint16_t seq, const int16_t* pcm, uint16_t frames);
+    void _packet(uint8_t* p, uint16_t n, uint8_t kind, int64_t tArr);
+    void _store(uint16_t seq, uint32_t ts, const int16_t* pcm, uint16_t frames);
+    size_t _readTimed(int16_t* out);   /* звук за часом (пакети 0x54) — під м'ютексом */
     void _resend(uint16_t first, uint16_t count);
     void _timing();
     void _reset();                      /* очистити буфер (FLUSH, новий потік) */

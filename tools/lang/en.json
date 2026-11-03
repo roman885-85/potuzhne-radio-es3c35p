@@ -484,5 +484,9 @@
  "Тихо — високим: MUTE у TPA3116.": "Quiet when high: MUTE on TPA3116.",
  "зараз: тихо — звук іде на вбудований динамік": "now: quiet — sound goes to the built-in speaker",
  "зараз: звук": "now: sound",
- "зараз: тихо": "now: quiet"
+ "зараз: тихо": "now: quiet",
+ "Низ": "Bass",
+ "як був": "as before",
+ "як до 03.11: без стелі й зрізу, повна поправка під кімнату": "as before 3 Nov: no cap or cut, full room correction",
+ "без гуркоту й рипіння: підйом низу до +10 дБ": "no boom or rattle: bass boost up to +10 dB"
 }

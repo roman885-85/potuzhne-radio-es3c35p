@@ -1,4 +1,5 @@
 #include "options.h"
+#include "../extras/yoATrace.h"
 #include "player.h"
 #include "config.h"
 #include "telnet.h"
@@ -104,7 +105,9 @@ void Player::resetQueue(){
 }
 
 void Player::stopInfo() {
-  config.setSmartStart(0);
+  /*  2 — «Автостарт» вимкнено: зупинка не сміє його вмикати (раніше будь-яка зупинка писала 0,
+      а перемикач показує «увімкнено» на всьому, крім 2)  */
+  if(config.store.smartstart != 2) config.setSmartStart(0);
   netserver.requestOnChange(MODE, 0);
 }
 
@@ -178,9 +181,11 @@ void Player::loop() {
   playerRequestParams_t requestP;
   if(xQueueReceive(playerQueue, &requestP, (isRunning() || _extData)?PL_QUEUE_TICKS:PL_QUEUE_TICKS_ST)){
     switch (requestP.type){
-      case PR_STOP: _fadeOutWait(); _stop(); break;
+      case PR_STOP: atrace::ev("PR_STOP"); _retryAt = 0; _retryN = 0; _fadeOutWait(); _stop(); break;
       case PR_PLAY: {
         Serial.printf("##PLAYER#\tграти %d\n", (int)requestP.payload);
+        atrace::ev("PR_PLAY", requestP.payload);
+        if(!_autoPlay){ _retryAt = 0; _retryN = 0; }   /* станцію вибрала людина — старі повтори не потрібні */
         _fadeOutWait();
         if (requestP.payload>0) {
           config.setLastStation((uint16_t)requestP.payload);
@@ -239,6 +244,8 @@ void Player::loop() {
       case PR_BURL: {
       #if defined(MQTT_ROOT_TOPIC) || defined(YO_BROWSEURL)
         if(strlen(burl)>0){
+          atrace::ev("PR_BURL");
+          _retryAt = 0; _retryN = 0;
           _fadeOutWait();
           browseUrl();
         }
@@ -253,7 +260,17 @@ void Player::loop() {
   if(extOn) _extPump();
   /*  Розмір файлу проповіді — із першого, повного з'єднання  */
   if(remoteStationName && !burlRanged && !burlSize && yoContentLen()) burlSize = yoContentLen();
-  if(!isRunning() && _status==PLAYING && !extOn) _stop(true);
+  if(!isRunning() && _status==PLAYING && !extOn){
+    /*  станція (не картка й не проповідь — у них кінець файлу) замовкла сама: потік обірвався  */
+    const bool web = config.getMode() == PM_WEB && !remoteStationName;
+    _stop(true);
+    if(web) _retrySchedule();
+  }
+  if(_retryAt && (int32_t)(millis() - _retryAt) >= 0){
+    _retryAt = 0;
+    if(_status != PLAYING && !extOn){ _autoPlay = true; sendCommand({PR_PLAY, (int)_retrySt}); }
+  }
+  if(_retryN && _status == PLAYING && _playT0 && millis() - _playT0 > 30000) _retryN = 0;   /* грає стало */
   if(_volTimer){
     if((millis()-_volTicks)>3000){
       config.saveVolume();
@@ -318,8 +335,10 @@ uint32_t Player::shownFilePos(){
 void Player::_fadeOutWait(uint16_t ms){
   if(_status != PLAYING || (!isRunning() && !extOn)) return;
   yoDsp.fadeOut(ms);
+  atrace::ev("затихання", ms);
   uint32_t t0 = millis();
   while(!yoDsp.faded() && millis() - t0 < (uint32_t)ms + 200){ if(extOn) _extPump(); else Audio::loop(); vTaskDelay(1); }
+  atrace::ev(yoDsp.faded() ? "затихло" : "не затихло", (int32_t)(millis() - t0));
 }
 
 /*  ---------- AirPlay ----------
@@ -384,8 +403,32 @@ void Player::fadeStop(){
   _stop(false, true);                     /* підсилювач лишаємо: слідом грає нове джерело, інакше клацне */
 }
 
+/*  Повтор через 2, 5, 10, 20, 30 с — разом трохи більше хвилини; далі — тиша з помилкою на екрані.  */
+static const uint8_t RETRY_S[] = { 2, 5, 10, 20, 30 };
+void Player::_retrySchedule(){
+  const uint8_t N = sizeof(RETRY_S) / sizeof(RETRY_S[0]);
+  if(_retryN >= N){
+    _retryN = 0;
+    Serial.println("##PLAYER#\tстанція не відповідає й після повторів — зупинено");
+    return;
+  }
+  const uint8_t s = RETRY_S[_retryN++];
+  _retrySt = config.lastStation();
+  _retryAt = (millis() + s * 1000UL) | 1;
+  Serial.printf("##PLAYER#\tзв'язок зі станцією %u обірвався — знову за %u с (%u з %u)\n", (unsigned)_retrySt, (unsigned)s, (unsigned)_retryN, (unsigned)N);
+  snprintf(config.tmpBuf, sizeof(config.tmpBuf), "Зв'язок обірвався — знову за %u с", (unsigned)s);
+  setError();
+}
+
+void Player::autoPlay(uint16_t st){
+  _autoPlay = true;
+  sendCommand({PR_PLAY, (int)st});
+}
+
 void Player::_play(uint16_t stationId) {
   log_i("%s called, stationId=%d", __func__, stationId);
+  const bool autoReq = _autoPlay;          /* сам (автостарт, повтор): не з'єдналось — пробувати ще */
+  _autoPlay = false;
   _extRelease(true);                      /* грав AirPlay — станція забирає звук собі */
   yoDsp.fadeIn(700);
   _hasError=false;
@@ -406,10 +449,13 @@ void Player::_play(uint16_t stationId) {
     config.saveValue(&config.store.play_mode, static_cast<uint8_t>(PM_WEB));
   }
   connproc = false;
+  atrace::ev("з'єднання");
   if(config.getMode()==PM_WEB) isConnected=connecttohost(config.station.url);
+  atrace::ev(isConnected ? "з'єдналось" : "не з'єдналось");
   connproc = true;
   if(isConnected){
     _status = PLAYING;
+    _playT0 = millis() | 1;
     config.configPostPlaying(stationId);
     /*  Тиша між станціями (з'єднались, але звуку ще нема: буфер тільки набирається) — час
         записати налаштування у флеш: запис зупиняє обидва ядра на 9–94 мс, посеред звуку це
@@ -424,6 +470,7 @@ void Player::_play(uint16_t stationId) {
     telnet.printf("##ERROR#:\tError connecting to %.128s\n", config.station.url);
     snprintf(config.tmpBuf, sizeof(config.tmpBuf), "Не вдалося з'єднатися"); setError();
     _stop(true);
+    if(autoReq && config.getMode() == PM_WEB) _retrySchedule();   /* автостарт чи повтор — ще раз згодом */
   };
 }
 
@@ -443,7 +490,10 @@ void Player::browseUrl(){
   display.putRequest(PSTOP);
   /*  підсилювач не вимикаємо — перемотка проповіді клацала б  */
   config.setTitle(LANG::const_PlConnect);
-  if (connecttohost(burl)){
+  atrace::ev("з'єднання (проповідь)");
+  const bool yoOk = connecttohost(burl);
+  atrace::ev(yoOk ? "з'єдналось" : "не з'єдналось");
+  if (yoOk){
     _status = PLAYING;
     config.setTitle(burlTitle);          /* у проповіді — ім'я проповідника */
     netserver.requestOnChange(MODE, 0);

@@ -20,6 +20,9 @@
 #include "lwip/udp.h"
 #include "lwip/tcpip.h"
 #include "alac/alac.h"
+#include "esp_timer.h"
+
+uint32_t yoOutQueueFrames();           /* audioI2S/Audio.cpp: скільки відліків між записом у I2S і динаміком */
 
 YoAirplay airplay;
 const char* friendlyOf();              /* extras/yoDlna.cpp: «ПОТУЖНЕ РАДІО (ім'я)» */
@@ -51,7 +54,7 @@ static size_t keyLen = 0;
     Звичайний UDP-сокет тримає в черзі лише 6 пакетів (так зібрано lwIP у
     ядрі), а Wi-Fi віддає звук пачками по 10–20: решта губилась би. Тому
     пакети забираємо просто в мережевому стеку й кладемо в свою чергу.  */
-struct RawPkt { uint16_t len; uint8_t kind; uint8_t data[RAW_MAX]; };   /* kind: 0 звук, 1 керування */
+struct RawPkt { int64_t t; uint16_t len; uint8_t kind; uint8_t data[RAW_MAX]; };   /* kind: 0 звук, 1 керування; t — коли прийшов */
 static RawPkt* raw = nullptr;
 static volatile uint16_t rawHead = 0, rawTail = 0;
 static volatile uint32_t stRawDrop = 0;
@@ -62,7 +65,7 @@ static TaskHandle_t apTask = nullptr;
 static volatile bool stopReq = false;
 
 /*  ---------- буфер звуку: задача → головний цикл ---------- */
-struct Slot { uint16_t seq; uint16_t frames; uint8_t ready; };
+struct Slot { uint32_t ts; uint16_t seq; uint16_t frames; uint8_t ready; };   /* ts — мітка RTP першого відліку */
 static Slot* slot = nullptr;
 static int16_t* slotPcm = nullptr;
 static SemaphoreHandle_t mtx = nullptr;
@@ -71,6 +74,43 @@ static uint16_t rd = 0, wr = 0;
 static uint32_t avgFill = 0;
 static uint8_t stuffCnt = 0;
 static uint32_t stPk = 0, stLost = 0, stUnder = 0, stSkip = 0, stAdd = 0, stDrop = 0, stResend = 0, stLate = 0, stBad = 0;
+
+/*  Синхронізація з відео (власник 03.11.2026: «відео на телефоні відстає на кілька секунд від звуку»).
+    Телефон шле звук наперед — на «затримку» (зазвичай 2 с) раніше, ніж його треба почути, — і рівно на
+    стільки ж притримує картинку. Радіо ж починало грати, щойно набирало 0,4 с, і далі тримало цей запас,
+    тобто звучало на ~1,6 с раніше, ніж чекав телефон: звук ішов поперед картинки.
+    Тепер відлік звучить тоді, коли кажуть пакети синхронізації (0x54, раз на секунду): «кадр R має
+    звучати просто зараз». Час приходу такого пакета (найраніший із недавніх — найменша затримка мережі)
+    і дає прив'язку «мітка RTP → наш годинник». Між записом у I2S і динаміком лежить повна черга DMA
+    (~186 мс) і недописана пачка — на стільки раніше кадр і віддаємо.  */
+static bool     haveSync = false;
+static uint32_t syncRtp = 0;            /* ця мітка RTP… */
+static int64_t  syncUs = 0;             /* …має звучати в цю мить нашого годинника (esp_timer, мкс) */
+static uint32_t latFrames = 0;          /* затримка, яку задав телефон, кадрів */
+static int32_t  errAvg = 0, errLast = 0;   /* похибка: + звучимо пізно, − рано, мкс */
+static uint32_t expTs = 0;              /* мітка наступного пакета — для загубленого */
+static bool     expOk = false;
+static uint32_t stSync = 0, stEarly = 0;
+static uint32_t sessT0 = 0;             /* коли в цій сесії прийшов перший пакет звуку (мс) */
+volatile bool   yoApClick = false;      /* налагодження «airplay click»: писати, коли звучить початок писку */
+static inline int64_t heardUs(uint32_t ts){ return syncUs + (int64_t)(int32_t)(ts - syncRtp) * 1000000LL / 44100; }
+
+/*  Пакет синхронізації: rNow — кадр, що звучить у телефона просто зараз (з урахуванням затримки), rNext —
+    наступний, який він пошле. Прийшов раніше, ніж каже стара прив'язка, — нова точніша (менша затримка
+    мережі); пізніше — тягнемося до нього дуже повільно (так стежимо за розбіжністю годинників).  */
+static void syncIn(uint32_t rNow, uint32_t rNext, int64_t t){
+  xSemaphoreTake(mtx, portMAX_DELAY);
+  latFrames = rNext - rNow;
+  if(!haveSync){ syncRtp = rNow; syncUs = t; haveSync = true; }
+  else{
+    const int64_t pred = heardUs(rNow);
+    const int64_t d = t - pred;
+    if(d < 0 || d > 500000){ syncRtp = rNow; syncUs = t; }    /* раніше — точніше; або телефон перескочив */
+    else { syncRtp = rNow; syncUs = pred + d / 16; }
+  }
+  stSync++;
+  xSemaphoreGive(mtx);
+}
 
 /*  ---------- сесія ---------- */
 struct Cli { int fd; char* buf; size_t len; size_t discard; };
@@ -372,6 +412,7 @@ static void udpIn(void* arg, udp_pcb* pcb, pbuf* p, const ip_addr_t* addr, u16_t
   }
   const uint16_t h = rawHead, nh = (uint16_t)((h + 1) % RAW_N);
   if(raw && nh != rawTail && p->tot_len <= RAW_MAX){
+    raw[h].t = esp_timer_get_time();
     raw[h].len = pbuf_copy_partial(p, raw[h].data, p->tot_len, 0);
     raw[h].kind = kind;
     rawHead = nh;
@@ -524,7 +565,7 @@ void YoAirplay::_run(){
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
     while(rawTail != rawHead){
       RawPkt& r = raw[rawTail];
-      _packet(r.data, r.len, r.kind);
+      _packet(r.data, r.len, r.kind, r.t);
       rawTail = (uint16_t)((rawTail + 1) % RAW_N);
     }
     if(lsock >= 0) _accept();
@@ -803,15 +844,19 @@ void YoAirplay::_request(char* req, size_t hl, char* body, size_t bl){
 
 /*  ---------- звук ---------- */
 
-void YoAirplay::_packet(uint8_t* p, uint16_t n, uint8_t kind){
+void YoAirplay::_packet(uint8_t* p, uint16_t n, uint8_t kind, int64_t tArr){
   if(n < 16) return;
   uint8_t type = p[1] & 0x7F;
   if(type == 0x56){                                   /* повтор загубленого: усередині звичайний пакет */
     if(n < 4 + 16) return;
     p += 4; n -= 4; type = 0x60;
-  }else if(kind == 1) return;                          /* синхронізація (0x54) — нам не потрібна */
+  }else if(kind == 1){
+    if(type == 0x54 && n >= 20 && _session && owner >= 0) syncIn(be32(p + 4), be32(p + 16), tArr);   /* синхронізація */
+    return;
+  }
   if(type != 0x60 || !_session || _released || owner < 0) return;
   const uint16_t seq = (uint16_t)((p[2] << 8) | p[3]);
+  const uint32_t ts = be32(p + 4);
   const uint8_t* pl = p + 12;
   const uint16_t len = n - 12;
   if(enc){
@@ -830,7 +875,7 @@ void YoAirplay::_packet(uint8_t* p, uint16_t n, uint8_t kind){
     for(int k = 0; k < frames * 2; k++) tmpPcm[k] = (int16_t)((decBuf[k * 2] << 8) | decBuf[k * 2 + 1]);
   }
   if(frames <= 0){ stBad++; return; }
-  _store(seq, tmpPcm, (uint16_t)frames);
+  _store(seq, ts, tmpPcm, (uint16_t)frames);
   _lastPkt = millis();
   _idleSent = false;
   if(!player.extOn && (!_outReq || millis() - outReqAt > 2000)){
@@ -839,11 +884,11 @@ void YoAirplay::_packet(uint8_t* p, uint16_t n, uint8_t kind){
   }
 }
 
-void YoAirplay::_store(uint16_t seq, const int16_t* pcm, uint16_t frames){
+void YoAirplay::_store(uint16_t seq, uint32_t ts, const int16_t* pcm, uint16_t frames){
   if(frames > FPP) frames = FPP;
   uint16_t missFrom = 0, missN = 0;
   xSemaphoreTake(mtx, portMAX_DELAY);
-  if(!synced){ synced = true; filling = true; rd = seq; wr = seq; avgFill = (uint32_t)TARGET << 8; }
+  if(!synced){ synced = true; filling = true; rd = seq; wr = seq; avgFill = (uint32_t)TARGET << 8; sessT0 = millis() | 1; }
   const int16_t ahead = (int16_t)(uint16_t)(seq - rd);
   if(ahead < 0){ stLate++; xSemaphoreGive(mtx); return; }
   if(ahead >= NSLOT - 1){
@@ -858,7 +903,7 @@ void YoAirplay::_store(uint16_t seq, const int16_t* pcm, uint16_t frames){
   }
   const uint16_t idx = seq % NSLOT;
   memcpy(&slotPcm[(size_t)idx * FPP * 2], pcm, (size_t)frames * 4);
-  slot[idx].seq = seq; slot[idx].frames = frames; slot[idx].ready = 1;
+  slot[idx].seq = seq; slot[idx].ts = ts; slot[idx].frames = frames; slot[idx].ready = 1;
   xSemaphoreGive(mtx);
   stPk++;
   if(missN) _resend(missFrom, missN);
@@ -887,6 +932,7 @@ void YoAirplay::_reset(){
   if(!mtx) return;
   xSemaphoreTake(mtx, portMAX_DELAY);
   synced = false; filling = true;
+  haveSync = false; expOk = false; errAvg = 0;   /* після FLUSH (пауза, перемотка) — нова прив'язка з наступного 0x54 */
   if(slot) for(uint16_t i = 0; i < NSLOT; i++) slot[i].ready = 0;
   xSemaphoreGive(mtx);
 }
@@ -908,6 +954,11 @@ size_t YoAirplay::read(int16_t* out, size_t maxFrames){
   if(!mtx || !slot || !_session || _released || maxFrames < FPP + 1) return 0;
   xSemaphoreTake(mtx, portMAX_DELAY);
   if(!synced){ xSemaphoreGive(mtx); return 0; }
+  if(haveSync) return _readTimed(out);           /* м'ютекс віддасть сама */
+  /*  Пакет синхронізації телефон шле разом із першим звуком, але інколи трохи пізніше. Почати грати
+      «за наповненням» до нього — це заграти на ~1,6 с раніше, а тоді вставляти тишу, щоб вирівнятись.
+      Тож першу секунду чекаємо; не прийшов зовсім (старий пристрій) — граємо, як раніше.  */
+  if(sessT0 && millis() - sessT0 < 1000){ xSemaphoreGive(mtx); return 0; }
   uint16_t fill = (uint16_t)(wr - rd);
   if(filling){
     if(fill < TARGET){ xSemaphoreGive(mtx); return 0; }
@@ -946,6 +997,81 @@ size_t YoAirplay::read(int16_t* out, size_t maxFrames){
   return n;
 }
 
+/*  Звук за часом: кожен пакет іде в I2S тоді, коли до динаміка йому лишається рівно черга виводу.
+    Рано — тиша (і черга DMA лишається повною, тож затримка до динаміка стала); запізнились більш ніж на
+    80 мс (затор у мережі) — пакет пропускаємо; дрібну похибку стираємо по одному відліку раз на 4 пакети
+    (до ~700 мільйонних — з запасом на розбіжність годинників телефона й радіо). Кличеться під м'ютексом.  */
+size_t YoAirplay::_readTimed(int16_t* out){
+  const int64_t now = esp_timer_get_time();
+  const int64_t lagUs = (int64_t)yoOutQueueFrames() * 1000000LL / 44100;
+  for(uint8_t guard = 0; guard < 64; guard++){
+    const uint16_t fill = (uint16_t)(wr - rd);
+    const uint16_t idx = rd % NSLOT;
+    const bool have = fill && slot[idx].ready && slot[idx].seq == rd;
+    if(!have && (!fill || !expOk)){
+      /*  нема чого грати (ще не прийшло) — коротка тиша: черга DMA не порожніє  */
+      if(!filling){ filling = true; stUnder++; }
+      xSemaphoreGive(mtx);
+      memset(out, 0, 128 * 4);
+      return 128;
+    }
+    const uint32_t ts = have ? slot[idx].ts : expTs;
+    const int64_t err = now + lagUs - heardUs(ts);
+    if(err < -3000){
+      size_t z = (size_t)((-err) * 44100 / 1000000);
+      if(z > FPP) z = FPP;
+      if(z < 1) z = 1;
+      xSemaphoreGive(mtx);
+      memset(out, 0, z * 4);
+      stEarly++;
+      return z;
+    }
+    const uint16_t pf = have ? slot[idx].frames : FPP;
+    if(err > 80000){
+      if(have) slot[idx].ready = 0;
+      rd++; expTs = ts + pf; expOk = true; stSkip++;
+      continue;
+    }
+    size_t n;
+    if(have){
+      n = pf;
+      memcpy(out, &slotPcm[(size_t)idx * FPP * 2], n * 4);
+      slot[idx].ready = 0;
+    }else if(fill > 8){
+      n = FPP; memset(out, 0, n * 4); stLost++;          /* не дочекались повтору — тиша на його місці */
+    }else{
+      xSemaphoreGive(mtx);
+      memset(out, 0, 64 * 4);                           /* повтор ще може прийти — чекаємо дрібкою тиші */
+      return 64;
+    }
+    if(yoApClick && have){
+      static bool quiet = true;
+      size_t at = n;
+      for(size_t i = 0; i < n; i++){ const int16_t v = out[i * 2]; if(v > 3000 || v < -3000){ at = i; break; } }
+      if(at < n && quiet){
+        struct timeval tv; gettimeofday(&tv, nullptr);
+        const int64_t u = (int64_t)tv.tv_sec * 1000000LL + tv.tv_usec + lagUs + (int64_t)at * 1000000LL / 44100;
+        const time_t sec = (time_t)(u / 1000000LL); struct tm lt; localtime_r(&sec, &lt);
+        Serial.printf("##AIRPLAY#\tписк: мітка %u звучить о %02d:%02d:%02d.%03d, похибка за прив'язкою %+d мс\n",
+                      (unsigned)(ts + at), lt.tm_hour, lt.tm_min, lt.tm_sec, (int)(u / 1000 % 1000), (int)(err / 1000));
+      }
+      quiet = at >= n;
+    }
+    rd++; expTs = ts + pf; expOk = true; filling = false;
+    errLast = (int32_t)err;
+    errAvg += ((int32_t)err - errAvg) / 16;
+    if(++stuffCnt >= 4){
+      stuffCnt = 0;
+      if(errAvg > 1000 && n > 1){ n--; stDrop++; }
+      else if(errAvg < -1000 && n){ out[n * 2] = out[n * 2 - 2]; out[n * 2 + 1] = out[n * 2 - 1]; n++; stAdd++; }
+    }
+    xSemaphoreGive(mtx);
+    return n;
+  }
+  xSemaphoreGive(mtx);
+  return 0;
+}
+
 void YoAirplay::released(){
   _released = true;
   _outReq = false;
@@ -965,5 +1091,8 @@ void YoAirplay::stat(){
                 (unsigned)stPk, (unsigned)stLate, (unsigned)stLost, (unsigned)stResend, (unsigned)stBad, (unsigned)stRawDrop);
   Serial.printf("  буфер %u пакетів (середнє %u, ціль %u), порожньо %u, пропущено %u, +відліків %u, -відліків %u\n",
                 (unsigned)(uint16_t)(wr - rd), (unsigned)(avgFill >> 8), (unsigned)TARGET, (unsigned)stUnder, (unsigned)stSkip, (unsigned)stAdd, (unsigned)stDrop);
+  Serial.printf("  синхронізація з телефоном: %s, затримка телефона %u мс, похибка %+d мс (середня %+d), пакетів 0x54 %u, тиші наперед %u, черга виводу %u мс\n",
+                haveSync ? "є" : "немає (грає за наповненням)", (unsigned)(latFrames * 1000ULL / 44100), (int)(errLast / 1000), (int)(errAvg / 1000),
+                (unsigned)stSync, (unsigned)stEarly, (unsigned)(yoOutQueueFrames() * 1000ULL / 44100));
   if(_task) Serial.printf("  стек задачі: вільно %u Б\n", (unsigned)uxTaskGetStackHighWaterMark((TaskHandle_t)_task));
 }

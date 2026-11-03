@@ -61,9 +61,14 @@ The radio's own interface is in Ukrainian or English (Menu › Settings › Lang
 - **Sound:** 10-band equalizer with presets, speaker protection, virtual bass, loudness compensation, balance, room
   correction measured with the built-in microphone (also with an external DAC — the tones go to the speakers at
   music volume, the correction applies to the output it was measured on); maximum volume as a percentage of full (Sound › Processing) —
-  volume at 100 % gives exactly that much, handy with a loud external amplifier.
+  volume at 100 % gives exactly that much, handy with a loud external amplifier; «Bass: soft» — no boom or rattle
+  (total bass boost up to +10 dB, infrasound cut on the line output, gentler room correction in the lows), «as before» —
+  the previous processing.
 - **Microphone:** claps and knocks on the case as commands, room presence.
-- **Wireless speaker:** AirPlay (iPhone, iPad, Mac) and DLNA.
+- **Wireless speaker:** AirPlay (iPhone, iPad, Mac) — sound follows the phone's timestamps, so in videos it stays in
+  sync with the picture — and DLNA.
+- **Autostart:** powered on or woken by touch — the last station plays; if a stream drops, the radio reconnects by
+  itself (several attempts within a minute).
 - **Radio web page** (`http://potuzhne-xxxx.local/`) and apps for Android, Windows, Mac — the same as for ES3C28P.
 - **Interface** with smooth animations: pages slide in, lists scroll with inertia, the volume slider glides. A frame
   is composed in PSRAM and sent to the panel whole, synchronized to the panel's tearing-effect signal (TE) — no

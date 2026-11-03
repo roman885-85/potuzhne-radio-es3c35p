@@ -18,6 +18,7 @@
 #include "../extras/yoMic.h"
 #include "../extras/yoDsp.h"
 #include "../extras/yoI2sLock.h"
+#include "../extras/yoATrace.h"
 #include "esp_timer.h"
 volatile uint32_t yoAuUnderN = 0, yoAuUnderMs = 0, yoAuMinFill = 0xFFFFFFFF;   /* audiostat */
 volatile uint32_t yoAuSamples = 0;                                              /* aunet: відліків віддано */
@@ -36,6 +37,7 @@ volatile bool yoAuLog = true;
 static uint32_t s_ob[512];
 static uint16_t s_on = 0;
 void yoAudioOut();                     /* extras/yoExtras.cpp: MUTE зовнішнього підсилювача — «звук іде» */
+void yoRateChange();                   /* extras/yoExtras.cpp: частота I2S змінюється — MUTE на час, поки ЦАП ловить такт */
 static void yoOutFlush(uint8_t port){
     yoAudioOut();
     const size_t len = (size_t)s_on * 4;
@@ -51,6 +53,10 @@ static void yoOutFlush(uint8_t port){
     s_on = 0;
 }
 static inline void yoOutDrop(){ s_on = 0; }
+/*  Скільки відліків між записом у I2S і динаміком: черга DMA (коли запис уже чекає — вона повна, без
+    половини буфера, що саме грає) і недописана пачка. Для синхронізації AirPlay з відео (extras/yoAirplay).  */
+static uint32_t s_dmaFrames = 4096, s_dmaLen = 512;   /* справжні — з налаштувань драйвера (конструктор Audio) */
+uint32_t yoOutQueueFrames(){ return s_dmaFrames - s_dmaLen / 2 + s_on; }
 #include "../extras/yoSfx.h"
 #include "../extras/yoSpectrum.h"
 
@@ -240,6 +246,8 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_DAC
   #endif
 #endif
     m_i2s_config.dma_buf_len          = psramInit()?512:DMA_BUFLEN;
+    s_dmaFrames = (uint32_t)m_i2s_config.dma_buf_count * m_i2s_config.dma_buf_len;   /* для yoOutQueueFrames */
+    s_dmaLen = m_i2s_config.dma_buf_len;
     m_i2s_config.use_apll             = APLL_DISABLE; // must be disabled in V2.0.1-RC1
     m_i2s_config.tx_desc_auto_clear   = true;   // new in V1.0.1
     m_i2s_config.fixed_mclk           = I2S_PIN_NO_CHANGE;
@@ -359,7 +367,10 @@ Audio::~Audio() {
     i2s_driver_uninstall((i2s_port_t)m_i2s_num); // #215 free I2S buffer
 }
 //---------------------------------------------------------------------------------------------------------------------
+static volatile bool yoFirstSample = false;   /* atrace: позначити перший відлік нового потоку */
 void Audio::setDefaults() {
+    atrace::ev("setDefaults");
+    yoFirstSample = true;
     stopSong();
     initInBuff(); // initialize InputBuffer if not already done
     InBuff.resetBuffer();
@@ -4972,6 +4983,8 @@ __attribute__((weak)) void audio_samplerate_changed(uint32_t sampRate) { (void)s
 bool Audio::setSampleRate(uint32_t sampRate) {
     if(!sampRate) sampRate = 16000; // fuse, if there is no value -> set default #209
     YoI2sGuard lk;                       // мікрофон не читає, поки драйвер перенастроюється (extras/yoI2sLock.h)
+    atrace::ev("частота", (int32_t)sampRate);
+    if(sampRate != m_sampleRate) yoRateChange();   // MUTE, поки ЦАП ловить новий такт (extras/yoExtras: rateChange)
     i2s_set_sample_rates((i2s_port_t)m_i2s_num, sampRate);
     m_sampleRate = sampRate;
     audio_samplerate_changed(sampRate);  // external codecs (ES8311) must follow the clock
@@ -5054,11 +5067,16 @@ bool Audio::playSample(int16_t sample[2]) {
 
     /*  спектр для головного екрана — ще до еквалайзера й гучності (extras/yoSpectrum)  */
     yoSpec.push(sample[LEFTCHANNEL], sample[RIGHTCHANNEL]);
+    const int16_t yoInL = sample[LEFTCHANNEL], yoInR = sample[RIGHTCHANNEL];   /* для atrace — до обробки */
     /*  еквалайзер, захист динаміка, гучність, обмежувач — src/extras/yoDsp  */
     uint32_t s32 = yoDsp.process(sample);
     _computeVUlevel(sample);
     /*  звук події — після гучності станції: у нього своя (extras/yoSfx)  */
     if(__builtin_expect(sfx.mixing(), 0)) s32 = sfx.mix(s32, getSampleRate());
+    if(__builtin_expect(atrace::on, 0)){
+        if(__builtin_expect(yoFirstSample, 0)){ yoFirstSample = false; atrace::ev("перший відлік", (int32_t)getSampleRate()); }
+        atrace::sample(yoInL, yoInR, s32, getSampleRate());
+    }
 
     if(m_f_internalDAC) {
         s32 += 0x80008000;

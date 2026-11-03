@@ -52,6 +52,9 @@ extern YoTee yoTee;
 void yoNetConBegin();                  /* задача сервера (з setup, після Serial.begin) */
 void yoNetConInfo(Print& o);           /* стан каналу — для команди «netcon» */
 bool yoNetConPeer(char* ip, size_t cap);   /* чи під'єднаний клієнт; його адреса */
+/*  Знімок екрана без паузи звуку («scrq»): кадр копіюється сюди, а рядки шле задача консолі —
+    просто клієнтові, повз журнал. false — немає клієнта чи пам'яті (тоді звичайний «scr»).  */
+bool yoNetConSnap(const uint16_t* fb, uint16_t w, uint16_t h);
 
 #ifndef YO_NETCON_IMPL
   #undef Serial

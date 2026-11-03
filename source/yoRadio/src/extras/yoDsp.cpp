@@ -39,9 +39,9 @@ void YoDsp::_peak(Bq& q, float fs, float f, float Q, float db){
   q.a1 = -2.0f * c / a0;       q.a2 = (1.0f - al / A) / a0;
 }
 
-void YoDsp::_lowShelf(Bq& q, float fs, float f, float db){
+void YoDsp::_lowShelf(Bq& q, float fs, float f, float db, float S){
   float A = pow(10.0f, db / 40.0f), w = 2.0f * M_PI * f / fs, c = cos(w), s = sin(w);
-  float al = s / 2.0f * sqrt(2.0f), sA = 2.0f * sqrt(A) * al;         /* нахил S = 1 */
+  float al = s / 2.0f * sqrt((A + 1.0f / A) * (1.0f / S - 1.0f) + 2.0f), sA = 2.0f * sqrt(A) * al;   /* S — нахил (1 — найкрутіший без горба) */
   float a0 = (A + 1) + (A - 1) * c + sA;
   q.b0 = A * ((A + 1) - (A - 1) * c + sA) / a0;
   q.b1 = 2 * A * ((A - 1) - (A + 1) * c) / a0;
@@ -88,9 +88,98 @@ float YoDsp::_magDb(const Bq& q, float fs, float hz){
 /*  Захист і віртуальний бас: частота зрізу  */
 static float guardHz(uint8_t g){ return g >= 2 ? 160.0f : 100.0f; }
 
+/*  ---------- м'який низ (з 03.11.2026) ---------- */
+
+/*  Поправка під кімнату, яку справді ставимо. Мікрофон плати низу не міряє (сам мікрофон і корпус):
+    у власника вийшло +6 на 62 Гц і −7/−8 на 125–250 — з еквалайзером це гуркіт і «яма» поруч. Тепер
+    смуги нижче 100 Гц не чіпаємо, кожну згладжуємо з сусідами (¼ ½ ¼) і обмежуємо: до 500 Гц ±4 дБ,
+    вище ±6 дБ.  */
+static float roomSoft(const ExtStore& e, uint8_t b){
+  auto raw = [&](int i) -> float { return (i < 0 || i >= EQ_BANDS || YoDsp::BAND_HZ[i] < 100) ? 0.0f : (float)e.eqRoom[i]; };
+  if(YoDsp::BAND_HZ[b] < 100) return 0;
+  const float a = (b > 0 && YoDsp::BAND_HZ[b - 1] >= 100) ? raw(b - 1) : raw(b);
+  const float c = b + 1 < EQ_BANDS ? raw(b + 1) : raw(b);
+  float v = 0.25f * a + 0.5f * raw(b) + 0.25f * c;
+  const float lim = YoDsp::BAND_HZ[b] < 500 ? 4.0f : 6.0f;
+  return v > lim ? lim : v < -lim ? -lim : v;
+}
+
+float YoDsp::roomApplied(uint8_t b) const {
+  const ExtStore& e = extras.s;
+  if(b >= EQ_BANDS || !e.eqRoomOn || e.eqRoomDac != e.dac) return 0;
+  return e.bassOld ? (float)e.eqRoom[b] : roomSoft(e, b);
+}
+
+/*  АЧХ ланки на заздалегідь порахованих cos/sin — для стелі підйому низу (без тригонометрії в циклі).  */
+struct CS { float c1, s1, c2, s2; };
+static float magAt(const float* q, const CS& w){
+  const float nr = q[0] + q[1] * w.c1 + q[2] * w.c2, ni = -(q[1] * w.s1 + q[2] * w.s2);
+  const float dr = 1.0f + q[3] * w.c1 + q[4] * w.c2,  di = -(q[3] * w.s1 + q[4] * w.s2);
+  float num = nr * nr + ni * ni, den = dr * dr + di * di;
+  if(den < 1e-20f) den = 1e-20f;
+  if(num < 1e-20f) num = 1e-20f;
+  return 10.0f * log10f(num / den);
+}
+
 uint8_t YoDsp::_build(Bq* q, float fs, uint8_t vol, uint8_t* nGuard) const {
   const ExtStore& e = extras.s;
   uint8_t n = 0;
+  if(!e.bassOld){
+    const bool speaker = e.dac == 0 || e.dac == 3;
+    /*  1. захист динаміка — як і був; на лінії (у підсилювач) — зріз інфразвуку 25 Гц: його не чути,
+        а дифузор від нього лише бовтається й рипить, коли низ підняли  */
+    if(speaker && e.eqGuard){
+      float f = guardHz(e.eqGuard);
+      if(e.eqGuard >= 2){ _hpf(q[n++], fs, f, 0.5412f); _hpf(q[n++], fs, f, 1.3066f); }
+      else                _hpf(q[n++], fs, f, 0.7071f);
+    }else if(!speaker) _hpf(q[n++], fs, 25.0f, 0.7071f);
+    if(nGuard) *nGuard = n;
+    const uint8_t nFix = n;
+    /*  2. смуги: еквалайзер + поправка під кімнату (м'яка)  */
+    float db[EQ_BANDS];
+    for(uint8_t b = 0; b < EQ_BANDS; b++){
+      float d = (e.eqOn ? e.eq[b] : 0) + ((e.eqRoomOn && e.eqRoomDac == e.dac) ? roomSoft(e, b) : 0.0f);
+      db[b] = d > 18 ? 18 : d < -18 ? -18 : d;
+    }
+    /*  3. тонкомпенсація — пологіша полиця (нахил 0,7)  */
+    float lo = 0, hi = 0;
+    if(e.eqLoud){
+      float att = vol > 0 ? -20.0f * log10(vol / 254.0f) : 48.0f;
+      if(att < 0) att = 0;
+      const bool strong = e.eqLoud >= 2;
+      lo = att * (strong ? 0.40f : 0.25f); hi = att * (strong ? 0.15f : 0.10f);
+      if(lo > (strong ? 12.0f : 8.0f)) lo = strong ? 12.0f : 8.0f;
+      if(hi > (strong ? 5.0f : 3.0f))  hi = strong ? 5.0f : 3.0f;
+    }
+    /*  4. стеля: разом низ піднімаємо не більше ніж на 10 дБ (30–160 Гц). Більше — гуркіт, який динамік
+        не відтворює, а рипить; стискаємо підйоми нижніх смуг і тонкомпенсації одним множником.  */
+    static const float CAPF[8] = { 30, 40, 50, 63, 80, 100, 125, 160 };
+    CS w[8];
+    for(uint8_t i = 0; i < 8; i++){ const float a = 2.0f * (float)M_PI * CAPF[i] / fs; w[i] = { cosf(a), sinf(a), cosf(2 * a), sinf(2 * a) }; }
+    float k = 1.0f;
+    for(uint8_t it = 0; it < 6; it++){
+      n = nFix;
+      for(uint8_t b = 0; b < EQ_BANDS; b++){
+        const float d = db[b] * ((db[b] > 0 && BAND_HZ[b] <= 125) ? k : 1.0f);
+        if(fabsf(d) < 0.25f || BAND_HZ[b] > fs * 0.45f) continue;
+        _peak(q[n++], fs, BAND_HZ[b], BAND_HZ[b] <= 125 ? 0.9f : EQ_Q, d);
+      }
+      if(e.eqLoud){
+        _lowShelf(q[n++], fs, speaker ? 180.0f : 100.0f, lo * k, 0.7f);
+        if(8000.0f < fs * 0.45f) _highShelf(q[n++], fs, 8000.0f, hi);
+      }
+      float mx = -99;
+      for(uint8_t i = 0; i < 8; i++){
+        float r = 0;
+        for(uint8_t j = 0; j < n; j++) r += magAt(&q[j].b0, w[i]);
+        if(r > mx) mx = r;
+      }
+      if(mx <= 10.2f) break;
+      const float f = 10.0f / mx;
+      k *= f < 0.3f ? 0.3f : f;
+    }
+    return n;
+  }
   /*  динамік — вбудований (ES8311) або підсилювач MAX98357A; ЦАП на лінію (PCM5102A, UDA1334A)
       іде в навушники чи підсилювач, а ті бас відтворюють самі  */
   bool speaker = e.dac == 0 || e.dac == 3;
@@ -197,13 +286,26 @@ void YoDsp::_recalc(){
   uint8_t n = _build(q, fs, _vol, &ng);
   /*  віртуальний бас  */
   float vbk = 0;
+  const uint8_t vbNl0 = _vbNl, vbNh0 = _vbNh;
   if(e.vbass && e.vbass <= 3){
     float f = (e.dac == 0 && e.eqGuard) ? guardHz(e.eqGuard) : 120.0f;
-    _lpf(_vbLo[0], fs, f, 0.5412f); _lpf(_vbLo[1], fs, f, 1.3066f);
-    _hpf(_vbHi[0], fs, f * 1.2f, 0.7071f); _lpf(_vbHi[1], fs, f * 4.0f, 0.7071f);
-    static const float K[4] = { 0, 0.9f, 1.6f, 2.6f };
-    vbk = K[e.vbass];
+    if(e.bassOld){
+      _lpf(_vbLo[0], fs, f, 0.5412f); _lpf(_vbLo[1], fs, f, 1.3066f);
+      _hpf(_vbHi[0], fs, f * 1.2f, 0.7071f); _lpf(_vbHi[1], fs, f * 4.0f, 0.7071f);
+      _vbNl = 2; _vbNh = 2;
+      static const float K[4] = { 0, 0.9f, 1.6f, 2.6f };
+      vbk = K[e.vbass];
+    }else{
+      /*  вужча смуга на вході (40 Гц знизу) — менше різницевих тонів; після випрямлення — зріз 4-го порядку,
+          щоб гул різниці (27 Гц на нотах 55 + 82) не проходив: −62 дБ замість −24; підйом менший  */
+      _lpf(_vbLo[0], fs, f, 0.5412f); _lpf(_vbLo[1], fs, f, 1.3066f); _hpf(_vbLo[2], fs, 40.0f, 0.7071f);
+      _hpf(_vbHi[0], fs, f * 1.25f, 0.5412f); _hpf(_vbHi[1], fs, f * 1.25f, 1.3066f); _lpf(_vbHi[2], fs, f * 4.0f, 0.7071f);
+      _vbNl = 3; _vbNh = 3;
+      static const float K[4] = { 0, 0.4f, 0.7f, 1.0f };
+      vbk = K[e.vbass];
+    }
   }
+  if(_vbNl != vbNl0 || _vbNh != vbNh0){ memset(_vbLoS, 0, sizeof(_vbLoS)); memset(_vbHiS, 0, sizeof(_vbHiS)); }   /* інша гілка басу */
   bool fresh = _reset || n != _nq || ng != _nGuard;   /* склад ланок змінився — старий стан не пасує */
   if(_reset){
     memset(_vbLoS, 0, sizeof(_vbLoS)); memset(_vbHiS, 0, sizeof(_vbHiS));
@@ -255,9 +357,9 @@ uint32_t YoDsp::process(int16_t s[2]){
   float vb = 0;
   if(_vbK > 0){
     float m = 0.5f * (xl + xr);
-    for(uint8_t i = 0; i < 2; i++){ const Bq& q = _vbLo[i]; m = runBq(q.b0, q.b1, q.b2, q.a1, q.a2, _vbLoS[i].z1, _vbLoS[i].z2, m); }
+    for(uint8_t i = 0; i < _vbNl; i++){ const Bq& q = _vbLo[i]; m = runBq(q.b0, q.b1, q.b2, q.a1, q.a2, _vbLoS[i].z1, _vbLoS[i].z2, m); }
     if(m < 0) m = -m;                             /* випрямлення: гармоніки 2f, 4f… */
-    for(uint8_t i = 0; i < 2; i++){ const Bq& q = _vbHi[i]; m = runBq(q.b0, q.b1, q.b2, q.a1, q.a2, _vbHiS[i].z1, _vbHiS[i].z2, m); }
+    for(uint8_t i = 0; i < _vbNh; i++){ const Bq& q = _vbHi[i]; m = runBq(q.b0, q.b1, q.b2, q.a1, q.a2, _vbHiS[i].z1, _vbHiS[i].z2, m); }
     vb = m * _vbK;
   }
   const uint8_t nq = _nq, ng = _nGuard;

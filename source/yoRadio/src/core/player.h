@@ -52,7 +52,16 @@ class Player: public Audio {
     void _extRelease(bool byRadio);     /* зійти з AirPlay: byRadio — радіо перемкнули на інше */
     void _extPump();                    /* відліки AirPlay → обробка звуку → I2S */
     bool _extData = false;
+    /*  Потік станції обірвався, і бібліотека не змогла з'єднатись знову — пробуємо самі ще кілька
+        разів (власник 03.11.2026: радіо стало саме посеред вечора, «Host not available»).  */
+    uint8_t  _retryN = 0;               /* скільки повторів уже було підряд */
+    uint32_t _retryAt = 0;              /* коли наступний (0 — не чекаємо) */
+    uint16_t _retrySt = 0;              /* яку станцію */
+    bool     _autoPlay = false;         /* наступний PR_PLAY — сам (повтор, автостарт), а не людина */
+    uint32_t _playT0 = 0;               /* коли станція з'єдналась — після 30 с гри лічильник повторів скидається */
+    void _retrySchedule();
   public:
+    void autoPlay(uint16_t st);         /* грати станцію самому: автостарт; не вийде — повтори */
     bool lockOutput = true;
     volatile bool extOn = false;     /* грає AirPlay (extras/yoAirplay): звук іде не з потоку, а готовими відліками */
     bool resumeAfterUrl = false;

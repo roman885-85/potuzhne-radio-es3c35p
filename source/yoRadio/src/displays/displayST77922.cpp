@@ -684,6 +684,7 @@ bool lcdPush(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* buf){
 /*  «Тінь» тепер — сам кадр у PSRAM: є завжди.  */
 void lcdShadow(bool on){ (void)on; }
 bool lcdShadowOn(){ return s_fb != nullptr; }
+const uint16_t* lcdFrame(){ return s_fb; }
 uint8_t st77922Rot(){ return s_rot; }
 uint32_t st77922Hz(){ return s_hz; }
 void lcdRotPie(int8_t on){ if(on >= 0) s_pie = on != 0; Serial.printf("ROTPIE %d (поворот %s)\n", s_pie ? 1 : 0, s_pie ? "векторний PIE" : "звичайним кодом"); }

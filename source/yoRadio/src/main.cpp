@@ -127,8 +127,8 @@ void setup() {
   airplay.begin();            /* і AirPlay */
   if (config.getMode()==PM_SDCARD) player.initHeaders(config.station.url);
   player.lockOutput=false;
-  if (config.store.smartstart == 1 && !YoExtras::wokeForAlarm()) {     /* будильник сам увімкне станцію */
-    player.sendCommand({PR_PLAY, config.lastStation()});
+  if (YoExtras::bootAutoPlay()) {     /* будильник сам увімкне станцію */
+    player.autoPlay(config.lastStation());
     Serial.printf("##BOOT#\tграти після ввімкнення: станція %u\n", (unsigned)config.lastStation());
   }else Serial.printf("##BOOT#\tпісля ввімкнення не граю (smartstart=%u, будильник=%d)\n", (unsigned)config.store.smartstart, YoExtras::wokeForAlarm() ? 1 : 0);
   pm.on_end_setup();
