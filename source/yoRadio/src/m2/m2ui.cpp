@@ -104,6 +104,58 @@ void drawBadge(Gfx& g, int16_t x, int16_t y, uint8_t ic, uint16_t color){
   icon(g, ic, x + 14, y + 14, light ? C_ACCTXT : 0xFFFF, color);
 }
 
+/*  =================== сітка розділів =================== */
+/*  Дві колонки; рядків стільки, скільки треба, але не вище 56 — і все в 200 точок вмісту.  */
+Rect GridPage::_cell(uint8_t i) const {
+  const uint8_t rows = (uint8_t)((_n + 1) / 2);
+  const int16_t gap = 8, w = (CWID - gap) / 2;
+  int16_t h = rows ? (int16_t)((CH - 16 - (rows - 1) * gap) / rows) : 40;
+  if(h > 56) h = 56;
+  return Rect(MX + (i % 2) * (w + gap), 4 + (i / 2) * (h + gap), w, h);
+}
+
+void GridPage::draw(Gfx& g){
+  for(uint8_t i = 0; i < _n; i++){
+    const Rect r = _cell(i);
+    if(!g.visible(r.x, r.y, r.w, r.h)) continue;
+    const Cell& c = _c[i];
+    g.box(r.x, r.y, r.w, r.h, R_CARD, C_SURF);
+    drawBadge(g, r.x + 8, r.y + (r.h - 28) / 2, c.icon, c.badge);
+    const char* v = c.value ? c.value() : nullptr;
+    const int16_t tx = r.x + 44, tw = r.w - 44 - 8;
+    if(v && *v){
+      g.text(tx, r.y + r.h / 2 - 2, c.label, F_SMB, C_TXT, AL_L, tw);
+      g.text(tx, r.y + r.h / 2 + 13, v, F_SM, C_TXT2, AL_L, tw);
+    }else g.text(tx, r.y + r.h / 2 + 5, c.label, F_SMB, C_TXT, AL_L, tw);
+  }
+}
+
+void GridPage::tick(uint32_t now){
+  if(now - _sigT < 250) return;
+  _sigT = now;
+  uint32_t s = 2166136261UL;
+  for(uint8_t i = 0; i < _n; i++){
+    const char* v = _c[i].value ? _c[i].value() : nullptr;
+    if(v) for(; *v; v++) s = (s ^ (uint8_t)*v) * 16777619UL;
+    s = (s ^ i) * 16777619UL;
+  }
+  if(s != _sig){ if(_sig) M.inval(Rect(0, 0, SW, CH)); _sig = s; }
+}
+
+int16_t GridPage::hit(int16_t x, int16_t y, Rect& r, uint8_t& radius){
+  for(uint8_t i = 0; i < _n; i++){ const Rect c = _cell(i); if(c.has(x, y)){ r = c; radius = R_CARD; return i; } }
+  return -1;
+}
+
+void GridPage::tap(int16_t id, int16_t x, int16_t y){
+  (void)x; (void)y;
+  if(id >= 0 && id < _n && _c[id].act) _c[id].act();
+}
+
+void GridPage::dump(){
+  for(uint8_t i = 0; i < _n; i++){ const Rect c = _cell(i); Serial.printf("ITEM\tcell\t%d\t%d\t%s\n", (int)c.y, (int)c.h, _c[i].label); }
+}
+
 /*  =================== рядки =================== */
 Item iSection(const char* label){ Item i; i.type = IT_SECTION; i.label = label; return i; }
 Item iNav(const char* label, uint8_t ic, uint16_t badge, TextFn value, ActFn act){ Item i; i.type = IT_NAV; i.label = label; i.icon = ic; i.badge = badge; i.text = value; i.act = act; return i; }

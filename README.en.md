@@ -72,7 +72,8 @@ The radio's own interface is in Ukrainian or English (Menu › Settings › Lang
 - **Radio web page** (`http://potuzhne-xxxx.local/`) and apps for Android, Windows, Mac — the same as for ES3C28P.
 - **Interface** with smooth animations: pages slide in, lists scroll with inertia, the volume slider glides. A frame
   is composed in PSRAM and sent to the panel whole, synchronized to the panel's tearing-effect signal (TE) — no
-  tearing.
+  tearing. Every settings page fits on one screen (Settings and Developer are a grid of sections); only lists scroll —
+  stations, sermons, networks.
 - **Screen languages:** Ukrainian and English.
 - **Wi-Fi debug console** — see [below](#working-without-usb-console-screenshots-and-flashing-over-wi-fi).
 

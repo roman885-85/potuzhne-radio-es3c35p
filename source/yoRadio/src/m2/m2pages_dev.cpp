@@ -38,23 +38,54 @@ static volatile int8_t s_dacSel = 0;
 static volatile bool s_dacAlt = false;
 
 /*  =================== «Розробник» =================== */
+/*  Сітка розділів на один екран (власник 03.11.2026: «розбий довгі сторінки налаштувань на підсторінки»).  */
 static const char* vDac(){ return DAC_NAME[extras.s.dac < 5 ? extras.s.dac : 0]; }
 static const char* vSnd(){ return extras.s.splashOff ? (extras.s.sfxOn ? "звуки" : "вимк") : (extras.s.sfxOn ? "заставка, звуки" : "заставка"); }
-static Item s_devItems[] = {
-  iSection("ЩО ПОКАЗУВАТИ"),
+static const char* vShow(){ const bool b = !extras.s.noBat, i = !extras.s.noIp; return b && i ? "батарея, IP" : b ? "батарея" : i ? "IP-адреса" : "нічого"; }
+static const char* vDbg(){ return extras.s.noNetCon ? "консоль вимк" : "консоль :2323"; }
+static const Cell s_devCells[] = {
+  { "Що показувати",    IC_EYE,     C_GREEN,  vShow,   [](){ M.push(&pgDevShow); } },
+  { "Обладнання",       IC_CHIP,    C_TEAL,   vDac,    [](){ M.push(&pgDevHw); } },
+  { "Заставка й звуки", IC_NOTE,    C_PINK,   vSnd,    [](){ M.push(&pgDevSnd); } },
+  { "Логотипи станцій", IC_REFRESH, C_BLUE,   nullptr, [](){ M.push(&pgLogos); } },
+  { "Сенсор",           IC_HAND,    C_VIOLET, nullptr, [](){ M.push(&pgTouch); } },
+  { "Налагодження",     IC_CODE,    C_ACC,    vDbg,    [](){ M.push(&pgDebug); } },
+};
+static GridPage s_dev("Розробник", s_devCells, sizeof(s_devCells) / sizeof(s_devCells[0]));
+Page& pgDev = s_dev;
+
+static Item s_devShowItems[] = {
   iSwitch("Батарея на екрані", IC_BATTERY, C_GREEN, [](){ return (int32_t)!extras.s.noBat; }, [](int32_t v){ extras.s.noBat = !v; extras.changed(); }),
   iSwitch("IP-адреса на екрані", IC_GLOBE, C_BLUE, [](){ return (int32_t)!extras.s.noIp; }, [](int32_t v){ extras.s.noIp = !v; extras.changed(); }),
-  iSection("ОБЛАДНАННЯ"),
+};
+static ListPage s_devShow("Що показувати", s_devShowItems, sizeof(s_devShowItems) / sizeof(s_devShowItems[0]));
+Page& pgDevShow = s_devShow;
+
+static const char* vMuteSum(){ return MUTE_LBL[extras.s.extMute < 3 ? extras.s.extMute : 0]; }
+static Item s_devHwItems[] = {
   iSwitch("Картка пам'яті", IC_CARD, C_ORANGE, [](){ return (int32_t)!extras.s.noSd; },
           [](int32_t v){ extras.s.noSd = !v; extras.changed(); if(extras.s.noSd){ recorder.stop(); if(config.getMode() == PM_SDCARD) config.changeMode(PM_WEB); } }),
 #if EXT_DAC
   iNav("Аудіовихід", IC_SPEAKER, C_TEAL, vDac, [](){ M.push(&pgDac); }),
+  iNav("MUTE підсилювача", IC_SPEAKER, C_RED, vMuteSum, [](){ M.push(&pgMute); }),
+#endif
+};
+static ListPage s_devHw("Обладнання", s_devHwItems, sizeof(s_devHwItems) / sizeof(s_devHwItems[0]));
+Page& pgDevHw = s_devHw;
+
+static Item s_muteItems[] = {
+#if EXT_DAC
   iSeg("MUTE підсилювача (" EXT_MUTE_NAME ")", MUTE_LBL, 3, [](){ return (int32_t)extras.s.extMute; },
        [](int32_t v){ extras.s.extMute = v; extras.changed(); extras.extMuteApply(); }),
   iNote(vMuteNote, 50),
+#else
+  iNote([](){ return "на цій платі зовнішнього ЦАП немає"; }, 22),
 #endif
-  iNav("Заставка й звуки", IC_NOTE, C_PINK, vSnd, [](){ M.push(&pgDevSnd); }),
-  iSection("ЛОГОТИПИ СТАНЦІЙ"),
+};
+static ListPage s_mute("MUTE підсилювача", s_muteItems, sizeof(s_muteItems) / sizeof(s_muteItems[0]));
+Page& pgMute = s_mute;
+
+static Item s_logoItems[] = {
   iButton("Завантажити всі логотипи", IC_REFRESH, [](){
     logos.fetchAllForce();
     char m[48]; snprintf(m, sizeof(m), tr("шукаю для %u станцій"), (unsigned)logos.batchTotal());
@@ -71,19 +102,31 @@ static Item s_devItems[] = {
     display.forceLogo();
   }),
   iNote([](){ return "для станцій, де минулого разу не знайшлося"; }, 22),
-  iSection("СЕНСОР"),
+};
+static ListPage s_logos("Логотипи станцій", s_logoItems, sizeof(s_logoItems) / sizeof(s_logoItems[0]));
+Page& pgLogos = s_logos;
+
+static Item s_touchItems[] = {
   iButton("Калібрування сенсора", IC_HAND, [](){ M.calibStart(); }),
   iNote([](){ return "якщо дотик б'є мимо:\nторкніться чотирьох позначок по кутах"; }, 36),
   iButton("Скинути калібрування", IC_RESTART, [](){ M.calibReset(); }),
-  iSection("НАЛАГОДЖЕННЯ"),
+};
+static ListPage s_touch("Сенсор", s_touchItems, sizeof(s_touchItems) / sizeof(s_touchItems[0]));
+Page& pgTouch = s_touch;
+
+/*  «Інфо про потік» (журнал декодера: формат, частота, помилки) — сюди з «Параметрів»: це для налагодження.  */
+static Item s_dbgItems[] = {
   iSwitch("Консоль по Wi-Fi", IC_CODE, C_TEAL, [](){ return (int32_t)!extras.s.noNetCon; }, [](int32_t v){ extras.s.noNetCon = !v; extras.changed(); }),
   iNote([](){ static char b[64]; char ip[16];
     if(!extras.s.noNetCon && yoNetConPeer(ip, sizeof(ip))) snprintf(b, sizeof(b), tr("під'єднано: %s"), ip);
     else snprintf(b, sizeof(b), "%s", tr("порт 2323, лише з вашої мережі"));
     return (const char*)b; }, 22),
+  iSwitch("Інфо про потік", IC_INFO, C_TEAL, [](){ return (int32_t)config.store.audioinfo; },
+          [](int32_t v){ config.saveValue(&config.store.audioinfo, static_cast<bool>(v)); }),
+  iNote([](){ return "журнал декодера: формат, частота, помилки"; }, 22),
 };
-static ListPage s_dev("Розробник", s_devItems, sizeof(s_devItems) / sizeof(s_devItems[0]));
-Page& pgDev = s_dev;
+static ListPage s_debug("Налагодження", s_dbgItems, sizeof(s_dbgItems) / sizeof(s_dbgItems[0]));
+Page& pgDebug = s_debug;
 
 /*  =================== «Заставка й звуки» =================== */
 /*  Повзунок гучності події: під час руху — пробний звук (не частіше ніж раз на 0,7 с).  */
@@ -103,29 +146,94 @@ static void sfxListen(SfxEvent e){
   if(!v){ M.toast(e == SFX_START || (!s.sfxVol && e != SFX_LOWBAT) ? "гучність 0 — звуку не буде" : "гучність цього звуку 0"); return; }
   sfx.test(e);
 }
-#define SFX_EV_SLIDER(label, ev) iSliderPlay(label, 0, 100, [](){ return (int32_t)extras.s.sfxEvVol[ev]; }, \
-  [](int32_t v){ extras.s.sfxEvVol[ev] = (uint8_t)v; extras.changed(); sfxHear(ev); }, "%", [](){ sfxListen(ev); })
+static const char* vSplash(){ static char b[32]; if(extras.s.splashOff) return "вимк"; snprintf(b, sizeof(b), tr("увімк · %u %%"), (unsigned)extras.s.splashVol); return b; }
+static const char* vSfxSum(){ static char b[32]; if(!extras.s.sfxOn) return "вимк"; snprintf(b, sizeof(b), tr("увімк · %u %%"), (unsigned)extras.s.sfxVol); return b; }
 static Item s_dsItems[] = {
-  iSection("ЗАСТАВКА"),
-  iSwitch("Анімована заставка", IC_SPLASH, C_PINK, [](){ return (int32_t)!extras.s.splashOff; }, [](int32_t v){ extras.s.splashOff = !v; extras.changed(); }),
-  iSliderPlay("Привітання (звук заставки)", 0, 100, [](){ return (int32_t)extras.s.splashVol; }, [](int32_t v){ extras.s.splashVol = v; extras.changed(); sfxHear(SFX_START); }, "%",
-              [](){ sfxListen(SFX_START); }),
-  iButton("Показати заставку", IC_PLAY, [](){ afterClose = 2; M.close(); }),
-  iSection("ЗВУКИ ПОДІЙ"),
-  iSwitch("Звуки подій", IC_BELL, C_PINK, [](){ return (int32_t)extras.s.sfxOn; }, [](int32_t v){ extras.s.sfxOn = v; extras.changed(); }),
-  iSlider("Загальна гучність", 0, 100, [](){ return (int32_t)extras.s.sfxVol; }, [](int32_t v){ extras.s.sfxVol = v; extras.changed(); sfxHear(SFX_GESTURE); }, "%"),
-  iSection("ГУЧНІСТЬ КОЖНОГО ЗВУКУ"),
-  SFX_EV_SLIDER("Дотик до екрана", SFX_CLICK),
-  SFX_EV_SLIDER("Жест прийнято", SFX_GESTURE),
-  SFX_EV_SLIDER("Мережа з'явилась", SFX_CONNECT),
-  SFX_EV_SLIDER("Мережа зникла", SFX_ERROR),
-  SFX_EV_SLIDER("Таймер сну", SFX_TIMER),
-  SFX_EV_SLIDER("Будильник", SFX_ALARM),
-  SFX_EV_SLIDER("Батарея сідає", SFX_LOWBAT),
+  iNav("Заставка", IC_SPLASH, C_PINK, vSplash, [](){ M.push(&pgSplash); }),
+  iNav("Звуки подій", IC_BELL, C_PINK, vSfxSum, [](){ M.push(&pgSfx); }),
+  iNav("Гучність кожного звуку", IC_NOTE, C_PINK, nullptr, [](){ M.push(&pgSfxVol); }),
   iNote([](){ return "кнопка з трикутником — прослухати звук;\nсвій звук (MP3 чи WAV) і які події озвучувати —\nна сторінці радіо: Розробник › Звуки подій"; }, 50),
 };
 static ListPage s_devSnd("Заставка й звуки", s_dsItems, sizeof(s_dsItems) / sizeof(s_dsItems[0]));
 Page& pgDevSnd = s_devSnd;
+
+static Item s_splashItems[] = {
+  iSwitch("Анімована заставка", IC_SPLASH, C_PINK, [](){ return (int32_t)!extras.s.splashOff; }, [](int32_t v){ extras.s.splashOff = !v; extras.changed(); }),
+  iSliderPlay("Привітання (звук заставки)", 0, 100, [](){ return (int32_t)extras.s.splashVol; }, [](int32_t v){ extras.s.splashVol = v; extras.changed(); sfxHear(SFX_START); }, "%",
+              [](){ sfxListen(SFX_START); }),
+  iButton("Показати заставку", IC_PLAY, [](){ afterClose = 2; M.close(); }),
+};
+static ListPage s_splash("Заставка", s_splashItems, sizeof(s_splashItems) / sizeof(s_splashItems[0]));
+Page& pgSplash = s_splash;
+
+static Item s_sfxItems[] = {
+  iSwitch("Звуки подій", IC_BELL, C_PINK, [](){ return (int32_t)extras.s.sfxOn; }, [](int32_t v){ extras.s.sfxOn = v; extras.changed(); }),
+  iSlider("Загальна гучність", 0, 100, [](){ return (int32_t)extras.s.sfxVol; }, [](int32_t v){ extras.s.sfxVol = v; extras.changed(); sfxHear(SFX_GESTURE); }, "%"),
+  iNote([](){ return "гучність кожного звуку — від загальної"; }, 22),
+};
+static ListPage s_sfx("Звуки подій", s_sfxItems, sizeof(s_sfxItems) / sizeof(s_sfxItems[0]));
+Page& pgSfx = s_sfx;
+
+/*  Гучність кожного звуку: сім рядків по 26 — назва, повзунок, відсотки, ▶. Звичайні повзунки (58 кожен)
+    давали 7 × 58 = 406 — кілька екранів гортання.  */
+struct SfxRow { const char* l; SfxEvent e; };
+static const SfxRow SFX_ROWS[7] = { { "Дотик до екрана", SFX_CLICK }, { "Жест прийнято", SFX_GESTURE }, { "Мережа з'явилась", SFX_CONNECT },
+                                    { "Мережа зникла", SFX_ERROR }, { "Таймер сну", SFX_TIMER }, { "Будильник", SFX_ALARM }, { "Батарея сідає", SFX_LOWBAT } };
+class SfxVolPage : public Page {
+  public:
+    const char* title() override { return "Гучність кожного звуку"; }
+    bool scrollable() override { return false; }
+    void enter() override { _drag = -1; }
+    void draw(Gfx& g) override {
+      g.box(MX, Y0, CWID, RH * 7, R_CARD, C_SURF);
+      char b[8];
+      for(uint8_t i = 0; i < 7; i++){
+        const int16_t y = Y0 + i * RH, cy = y + RH / 2;
+        if(!g.visible(MX, y, CWID, RH)) continue;
+        if(i) g.fill(MX + 12, y, CWID - 24, 1, C_LINE);
+        const int16_t v = (_drag == i) ? _dragV : extras.s.sfxEvVol[SFX_ROWS[i].e];
+        g.text(MX + 12, cy + 4, SFX_ROWS[i].l, F_SM, C_TXT, AL_L, TX - MX - 18);
+        drawSlider(g, TX, cy, TW, v / 100.0f);
+        snprintf(b, sizeof(b), "%d%%", (int)v);
+        g.text(MX + CWID - 32, cy + 4, b, F_SM, _drag == i ? C_ACC : C_TXT2, AL_R);
+        icon(g, IC_PLAY, MX + CWID - 15, cy, C_ACC, C_SURF);
+      }
+    }
+    int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override {
+      if(y < Y0 || y >= Y0 + RH * 7) return -1;
+      const int16_t i = (y - Y0) / RH;
+      if(x >= MX + CWID - 30){ r = Rect(MX + CWID - 30, Y0 + i * RH, 30, RH); radius = 0; return 100 + i; }
+      r = Rect(MX, Y0 + i * RH, CWID - 30, RH); radius = 0;
+      return i;
+    }
+    uint8_t grab(int16_t id) override { return (id >= 0 && id < 7) ? 1 : 0; }
+    void drag(int16_t id, int16_t x, int16_t y, bool end) override {
+      (void)y;
+      if(id < 0 || id >= 7) return;
+      const int16_t v = at(x);
+      if(end){ _drag = -1; M.postValue(id, v, true); }
+      else if(_drag != id || _dragV != v){ _drag = (int8_t)id; _dragV = v; M.postValue(id, v, false); }
+      M.inval(Rect(0, Y0 + id * RH, SW, RH));
+    }
+    void value(int16_t id, int32_t v) override {
+      if(id < 0 || id >= 7) return;
+      extras.s.sfxEvVol[SFX_ROWS[id].e] = (uint8_t)(v < 0 ? 0 : v > 100 ? 100 : v);
+      extras.changed();
+      sfxHear(SFX_ROWS[id].e);
+    }
+    void tap(int16_t id, int16_t x, int16_t y) override {
+      (void)y;
+      if(id >= 100 && id < 107){ sfxListen(SFX_ROWS[id - 100].e); return; }
+      if(id >= 0 && id < 7 && x >= TX - 6){ value(id, at(x)); M.inval(Rect(0, Y0 + id * RH, SW, RH)); }
+    }
+  private:
+    static constexpr int16_t RH = 26, Y0 = 4, TX = MX + 132, TW = CWID - 132 - 66;
+    int8_t _drag = -1;
+    int16_t _dragV = 0;
+    static int16_t at(int16_t x){ int v = (int)lroundf((x - TX) * 100.0f / TW); return v < 0 ? 0 : v > 100 ? 100 : v; }
+};
+static SfxVolPage s_sfxVol;
+Page& pgSfxVol = s_sfxVol;
 
 /*  =================== «Аудіовихід» =================== */
 /*  Рядок — 52, але щоб усі виходи стали на екран без прокрутки (на ES3C35P їх чотири: 4·52 + 16 = 224 > 200,

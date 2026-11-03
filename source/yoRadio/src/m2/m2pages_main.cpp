@@ -274,7 +274,7 @@ void PultPage::tap(int16_t id, int16_t x, int16_t y){
 }
 
 bool PultPage::hold(int16_t id){
-  if(id == 0){ M.push(&pgAlarm); return true; }
+  if(id == 0){ M.push(&pgSleep); return true; }
   return false;
 }
 
@@ -294,47 +294,53 @@ static const char* vGest(){
 static const char* vPres(){ return (extras.s.sleepEar || extras.s.presWake || extras.s.presOff) ? "увімк" : "вимк"; }
 static const char* vTz(){ static char b[12]; snprintf(b, sizeof(b), "%+03d:%02d", config.store.tzHour, abs(config.store.tzMin)); return b; }
 static const char* vVer(){ return prVersion(); }
-static const char* vUpd(){
-  static char b[40];
-  if(ota.installing()) return "іде…";
-  if(ota.available()){ snprintf(b, sizeof(b), tr("є %s"), ota.latest()); return b; }
-  if(ota.state() == OTA_CHECKING) return "перевіряю…";
-  return ota.latest()[0] ? (ota.hasFile() ? "остання" : "немає випусків") : "";
-}
 
 /*  Назви мов навмисно не перекладаються: кожна написана сама собою, щоб її
     впізнав і той, хто другої не знає.  */
 static const char* const LANGS[] = { "Українська", "English" };
 
-static Item s_setItems[] = {
-  iSection("МЕРЕЖА"),
-  iNav("Wi-Fi", IC_WIFI, C_BLUE, vWifi, [](){ M.push(&pgWifi); }),
-  iSection("ГОЛОС І ЖЕСТИ"),
-  iNav("Мікрофон", IC_MIC, C_VIOLET, vMic, [](){ M.push(&pgMic); }),
-  iNav("Хлопки й стук", IC_HAND, C_VIOLET, vGest, [](){ M.push(&pgGest); }),
-  iNav("Присутність", IC_PERSON, C_VIOLET, vPres, [](){ M.push(&pgPres); }),
-  iSection("СИСТЕМА"),
-  iSeg("Мова", LANGS, 2, [](){ return (int32_t)extras.s.lang; },
-       [](int32_t v){ extras.s.lang = (uint8_t)v; extras.changed(); langSet((uint8_t)v); M.invalAll(); }),
-  iNav("Часовий пояс", IC_GLOBE, C_TEAL, vTz, [](){ M.push(&pgTz); }),
-  iSwitch("Автостарт", IC_START, C_TEAL, [](){ return (int32_t)(config.store.smartstart != 2); },
-          [](int32_t v){ config.saveValue(&config.store.smartstart, static_cast<uint8_t>(v ? 1 : 2)); }),
-  iSwitch("Інфо про потік", IC_INFO, C_TEAL, [](){ return (int32_t)config.store.audioinfo; },
-          [](int32_t v){ config.saveValue(&config.store.audioinfo, static_cast<bool>(v)); }),
+/*  «Параметри» — сітка 2×4 на один екран (власник 03.11.2026: «розбий довгі сторінки налаштувань на
+    підсторінки, щоб кожна вміщалась у екран без прокрутки»). Колонки й система — підсторінки;
+    Оновлення й Живлення — на головному меню, тут їх більше нема.  */
+static const char* vSpk(){ const bool d = dlna.on(), a = airplay.on(); return d && a ? "DLNA, AirPlay" : d ? "DLNA" : a ? "AirPlay" : "вимк"; }
+static const char* vSys(){ static char b[40]; snprintf(b, sizeof(b), "%s · %s", LANGS[extras.s.lang < 2 ? extras.s.lang : 0], vTz()); return b; }
+static const Cell s_setCells[] = {
+  { "Wi-Fi",         IC_WIFI,    C_BLUE,   vWifi,   [](){ M.push(&pgWifi); } },
+  { "Мікрофон",      IC_MIC,     C_VIOLET, vMic,    [](){ M.push(&pgMic); } },
+  { "Хлопки й стук", IC_HAND,    C_VIOLET, vGest,   [](){ M.push(&pgGest); } },
+  { "Присутність",   IC_PERSON,  C_VIOLET, vPres,   [](){ M.push(&pgPres); } },
+  { "Колонки",       IC_SPEAKER, C_BLUE,   vSpk,    [](){ M.push(&pgSpeakers); } },
+  { "Система",       IC_GLOBE,   C_TEAL,   vSys,    [](){ M.push(&pgSystem); } },
+  { "Про радіо",     IC_INFO,    C_GREY,   vVer,    [](){ M.push(&pgInfo); } },
+  { "Розробник",     IC_CODE,    C_ACC,    nullptr, [](){ M.push(&pgDev); } },
+};
+static GridPage s_settings("Параметри", s_setCells, sizeof(s_setCells) / sizeof(s_setCells[0]));
+Page& pgSettings = s_settings;
+
+/*  =================== «Колонки» =================== */
+static Item s_spkItems[] = {
   iSwitch("Колонка DLNA", IC_SPEAKER, C_BLUE, [](){ return (int32_t)(dlna.on() ? 1 : 0); },
           [](int32_t v){ dlna.setOn(v != 0); M.toast(v ? "радіо видно в мережі як колонку" : "колонку вимкнено"); }),
   iNote([](){ return "телефон чи комп'ютер надсилає радіо доріжку\n(BubbleUPnP, VLC, «Передати на пристрій»)"; }, 36),
   iSwitch("Колонка AirPlay", IC_SPEAKER, C_BLUE, [](){ return (int32_t)(airplay.on() ? 1 : 0); },
           [](int32_t v){ airplay.setOn(v != 0); M.toast(v ? "радіо видно в AirPlay" : "AirPlay вимкнено"); }),
   iNote([](){ return "iPhone, iPad і Mac грають на радіо будь-який звук\n(«Звук» у Пункті керування, кнопка AirPlay)"; }, 36),
-  iSection("РАДІО"),
-  iNav("Оновлення", IC_REFRESH, C_BLUE, vUpd, [](){ M.push(&pgUpdate); }),
-  iNav("Про радіо", IC_INFO, C_GREY, vVer, [](){ M.push(&pgInfo); }),
-  iNav("Живлення", IC_POWER, C_RED, nullptr, [](){ M.push(&pgPower); }),
-  iNav("Розробник", IC_CODE, C_ACC, nullptr, [](){ M.push(&pgDev); }),
 };
-static ListPage s_settings("Параметри", s_setItems, sizeof(s_setItems) / sizeof(s_setItems[0]));
-Page& pgSettings = s_settings;
+static ListPage s_speakers("Колонки", s_spkItems, sizeof(s_spkItems) / sizeof(s_spkItems[0]));
+Page& pgSpeakers = s_speakers;
+
+/*  =================== «Система» =================== */
+/*  «Інфо про потік» (журнал декодера) переїхав у Розробник › Налагодження.  */
+static Item s_sysItems[] = {
+  iSeg("Мова", LANGS, 2, [](){ return (int32_t)extras.s.lang; },
+       [](int32_t v){ extras.s.lang = (uint8_t)v; extras.changed(); langSet((uint8_t)v); M.invalAll(); }),
+  iNav("Часовий пояс", IC_GLOBE, C_TEAL, vTz, [](){ M.push(&pgTz); }),
+  iSwitch("Автостарт", IC_START, C_TEAL, [](){ return (int32_t)(config.store.smartstart != 2); },
+          [](int32_t v){ config.saveValue(&config.store.smartstart, static_cast<uint8_t>(v ? 1 : 2)); }),
+  iNote([](){ return "увімкнули радіо — грає остання станція"; }, 22),
+};
+static ListPage s_system("Система", s_sysItems, sizeof(s_sysItems) / sizeof(s_sysItems[0]));
+Page& pgSystem = s_system;
 
 /*  =================== «Екран» =================== */
 static const char* const SAVE_LBL[5] = { "вимк", "10 с", "15 с", "30 с", "60 с" };
@@ -351,28 +357,69 @@ static const char* vBattery(){
   else                     snprintf(b, sizeof(b), tr("%d%%, %u.%02u В"), extras.batPct(), mv / 1000, (mv % 1000) / 10);
   return b;
 }
-static bool nightOn(){ return extras.s.nightOn; }
+static const char* vNightSum(){ static char b[24]; if(!extras.s.nightOn) return "вимк"; snprintf(b, sizeof(b), "%s–%s", vNightFrom(), vNightTo()); return b; }
 
+/*  «Екран» — яскравість і два розділи; нічний режим і батарея — підсторінки, кожна на один екран.  */
 static Item s_scrItems[] = {
   iGap(4),
   iSlider("Яскравість", 5, 100, [](){ return (int32_t)config.store.brightness; },
           [](int32_t v){ config.store.brightness = (uint8_t)v; config.setBrightness(true); }, "%"),
-  iSection("НІЧНИЙ РЕЖИМ"),
-  iSwitch("Нічний режим", IC_MOON, C_VIOLET, [](){ return (int32_t)extras.s.nightOn; },
-          [](int32_t v){ extras.s.nightOn = v; extras.changed(); }),
-  iNav("Початок", IC_CLOCK, C_VIOLET, vNightFrom, [](){ M.push(&pgNightFrom); }),
-  iNav("Кінець", IC_CLOCK, C_VIOLET, vNightTo, [](){ M.push(&pgNightTo); }),
-  iSlider("Яскравість уночі", 0, 100, [](){ return (int32_t)extras.s.nightLevel; },
-          [](int32_t v){ extras.s.nightLevel = (uint8_t)v; extras.changed(); }, "%"),
-  iSection("БАТАРЕЯ"),
-  iSeg("Без зарядника пригасити через", SAVE_LBL, 5, [](){ return (int32_t)extras.s.batSave; },
-       [](int32_t v){ extras.s.batSave = (uint8_t)v; extras.changed(); }),
-  iInfo("Стан батареї", vBattery),
-  iSection("СВІТЛОДІОД НА ПЛАТІ"),
-  iSeg("", LED_LBL, 3, [](){ return (int32_t)extras.s.ledMode; }, [](int32_t v){ extras.s.ledMode = (uint8_t)v; extras.changed(); }),
+  iNav("Нічний режим", IC_MOON, C_VIOLET, vNightSum, [](){ M.push(&pgNight); }),
+  iNav("Батарея й світлодіод", IC_BATTERY, C_GREEN, vBattery, [](){ M.push(&pgBatLed); }),
 };
 static ListPage s_screen("Екран", s_scrItems, sizeof(s_scrItems) / sizeof(s_scrItems[0]));
 Page& pgScreen = s_screen;
+
+/*  =================== «Нічний режим» =================== */
+/*  Початок і кінець — одним рядком на дві половини: так сторінка стає на екран цілком.  */
+static void nightTimes(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
+  const int16_t hw = w / 2;
+  g.fill(x + 14, y, w - 14, 1, C_LINE);
+  g.fill(x + hw, y + 8, 1, h - 16, C_LINE);
+  g.text(x + 14, y + h / 2 + 4, "Початок", F_ROW, C_TXT, AL_L, hw - 76);
+  g.text(x + hw - 12, y + h / 2 + 4, vNightFrom(), F_ROW, C_TXT2, AL_R);
+  g.text(x + hw + 14, y + h / 2 + 4, "Кінець", F_ROW, C_TXT, AL_L, hw - 76);
+  g.text(x + w - 12, y + h / 2 + 4, vNightTo(), F_ROW, C_TXT2, AL_R);
+}
+static Item s_nightItems[] = {
+  iSwitch("Нічний режим", IC_MOON, C_VIOLET, [](){ return (int32_t)extras.s.nightOn; },
+          [](int32_t v){ extras.s.nightOn = v; extras.changed(); }),
+  [](){ Item i = iCustom(44, nightTimes); i.color = 1; return i; }(),
+  iSlider("Яскравість уночі", 0, 100, [](){ return (int32_t)extras.s.nightLevel; },
+          [](int32_t v){ extras.s.nightLevel = (uint8_t)v; extras.changed(); }, "%"),
+  iNote([](){ return "у цей час екран сам пригасає"; }, 22),
+};
+class NightPage : public ListPage {
+  public:
+    NightPage() : ListPage("Нічний режим", s_nightItems, sizeof(s_nightItems) / sizeof(s_nightItems[0])) {}
+    int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override {
+      const Item& it = s_nightItems[1];
+      if(it.vis && y >= it.y && y < it.y + it.hh){
+        const int16_t hw = CWID / 2;
+        const bool right = x >= MX + hw;
+        r = Rect(right ? MX + hw : MX, it.y, hw, it.hh); radius = 0;
+        return right ? 51 : 50;
+      }
+      return ListPage::hit(x, y, r, radius);
+    }
+    void tap(int16_t id, int16_t x, int16_t y) override {
+      if(id == 50){ M.push(&pgNightFrom); return; }
+      if(id == 51){ M.push(&pgNightTo); return; }
+      ListPage::tap(id, x, y);
+    }
+};
+static NightPage s_night;
+Page& pgNight = s_night;
+
+/*  =================== «Батарея й світлодіод» =================== */
+static Item s_batItems[] = {
+  iSeg("Без зарядника пригасити через", SAVE_LBL, 5, [](){ return (int32_t)extras.s.batSave; },
+       [](int32_t v){ extras.s.batSave = (uint8_t)v; extras.changed(); }),
+  iInfo("Стан батареї", vBattery),
+  iSeg("Світлодіод на платі", LED_LBL, 3, [](){ return (int32_t)extras.s.ledMode; }, [](int32_t v){ extras.s.ledMode = (uint8_t)v; extras.changed(); }),
+};
+static ListPage s_batLed("Батарея й світлодіод", s_batItems, sizeof(s_batItems) / sizeof(s_batItems[0]));
+Page& pgBatLed = s_batLed;
 
 /*  =================== вибір часу (ніч: з/до) =================== */
 class HalfHourPage : public ListPage {
@@ -433,8 +480,10 @@ static HalfHourPage s_nightTo("Нічний режим до", false, s_ntItems, 
 Page& pgNightFrom = s_nightFrom;
 Page& pgNightTo = s_nightTo;
 
-/*  =================== «Будильник і сон» =================== */
-static const char* const DAYS_LBL[2]  = { "щодня", "будні" };
+/*  =================== «Будильник» і «Таймер сну» =================== */
+/*  Будильник: вимикач і «щодня / будні» — один вибір із трьох; таймер сну — окрема сторінка
+    (утримати плитку «Сон» на головному меню). Обидві — на один екран (03.11.2026).  */
+static const char* const ALARM_LBL[3] = { "вимк", "щодня", "будні" };
 static const char* const SLEEP_LBL[5] = { "вимк", "15", "30", "60", "90" };
 static const char* vAlarmNote(){
   static char b[96];
@@ -457,10 +506,10 @@ static const char* vSleepNote(){
 
 class AlarmPage : public HalfHourPage {
   public:
-    AlarmPage(Item* items, uint8_t n) : HalfHourPage("Будильник і сон", true, items, n) {}
+    AlarmPage(Item* items, uint8_t n) : HalfHourPage("Будильник", true, items, n) {}
     void enter() override {
       ListPage::enter();
-      drum.top = 4; drum.h = 118; drum.n[0] = 24; drum.n[1] = 12; drum.label = alLabel; drum.drag = false;
+      drum.top = 4; drum.h = 96; drum.n[0] = 24; drum.n[1] = 12; drum.label = alLabel; drum.drag = false;
       drum.setVal(0, extras.s.alarmH); drum.setVal(1, extras.s.alarmM / 5);
       _asent = extras.s.alarmH * 60 + extras.s.alarmM;
     }
@@ -486,17 +535,23 @@ class AlarmPage : public HalfHourPage {
 };
 
 static Item s_alItems[] = {
-  iGap(126),
-  iSwitch("Будильник", IC_ALARM, C_ORANGE, [](){ return (int32_t)extras.s.alarmOn; }, [](int32_t v){ extras.s.alarmOn = v; extras.changed(); }),
-  iSeg("", DAYS_LBL, 2, [](){ return (int32_t)extras.s.alarmDays; }, [](int32_t v){ extras.s.alarmDays = (uint8_t)v; extras.changed(); }),
+  iGap(100),
+  iSeg("", ALARM_LBL, 3, [](){ return (int32_t)(extras.s.alarmOn ? 1 + (extras.s.alarmDays ? 1 : 0) : 0); },
+       [](int32_t v){ ExtStore& e = extras.s; if(v <= 0) e.alarmOn = 0; else { e.alarmOn = 1; e.alarmDays = (uint8_t)(v - 1); } extras.changed(); }),
   iNote(vAlarmNote, 24),
-  iSection("ТАЙМЕР СНУ, ХВ"),
-  iSeg("", SLEEP_LBL, 5, [](){ uint16_t m = extras.sleepMinutes(); for(uint8_t i = 0; i < 5; i++) if(SLEEP_MIN[i] == m) return (int32_t)i; return (int32_t)-1; },
-       [](int32_t v){ if(v >= 0 && v < 5) extras.setSleep(SLEEP_MIN[v]); }),
-  iNote(vSleepNote, 24),
 };
 static AlarmPage s_alarm(s_alItems, sizeof(s_alItems) / sizeof(s_alItems[0]));
 Page& pgAlarm = s_alarm;
+
+static Item s_sleepItems[] = {
+  iSection("ЗАМОВКНУТИ ЧЕРЕЗ, ХВ"),
+  iSeg("", SLEEP_LBL, 5, [](){ uint16_t m = extras.sleepMinutes(); for(uint8_t i = 0; i < 5; i++) if(SLEEP_MIN[i] == m) return (int32_t)i; return (int32_t)-1; },
+       [](int32_t v){ if(v >= 0 && v < 5) extras.setSleep(SLEEP_MIN[v]); }),
+  iNote(vSleepNote, 24),
+  iNote([](){ return "плитка «Сон» на меню: дотик — по колу 15, 30, 60, 90,\nутримати — ця сторінка"; }, 36),
+};
+static ListPage s_sleep("Таймер сну", s_sleepItems, sizeof(s_sleepItems) / sizeof(s_sleepItems[0]));
+Page& pgSleep = s_sleep;
 
 /*  =================== «Часовий пояс» =================== */
 class TzPage : public HalfHourPage {
@@ -791,15 +846,41 @@ static const char* vBat2(){
   return b;
 }
 static const char* vHeap(){ static char b[24]; snprintf(b, sizeof(b), tr("%u КБ"), (unsigned)(ESP.getFreeHeap() / 1024)); return b; }
-static Item s_infoItems[] = {
-  iSection("ПОТУЖНЕ РАДІО"),
-  iInfo("Версія", vBuild),
-  iSection("МЕРЕЖА"),
-  iInfo("Мережа", vNet), iInfo("Адреса", vIp), iInfo("Сигнал", vRssi),
-  iSection("ЗАРАЗ"),
-  iInfo("Потік", vStream), iInfo("Погода", vWeather), iInfo("Батарея", vBat2), iInfo("Вільна пам'ять", vHeap),
+/*  Вісім рядків по 22 — уся сторінка на одному екрані (раніше з розділами — 450, треба було гортати).  */
+struct InfoRow { const char* l; TextFn v; };
+static const InfoRow INFO_ROWS[8] = { { "Версія", vBuild }, { "Мережа", vNet }, { "Адреса", vIp }, { "Сигнал", vRssi },
+                                      { "Потік", vStream }, { "Погода", vWeather }, { "Батарея", vBat2 }, { "Вільна пам'ять", vHeap } };
+class InfoPage : public Page {
+  public:
+    const char* title() override { return "Про радіо"; }
+    bool scrollable() override { return false; }
+    void enter() override { _sig = 0; }
+    void draw(Gfx& g) override {
+      const int16_t RH = 22, Y0 = 4;
+      g.box(MX, Y0, CWID, RH * 8, R_CARD, C_SURF);
+      for(uint8_t i = 0; i < 8; i++){
+        const int16_t y = Y0 + i * RH;
+        if(!g.visible(MX, y, CWID, RH)) continue;
+        if(i) g.fill(MX + 12, y, CWID - 24, 1, C_LINE);
+        g.text(MX + 12, y + 15, INFO_ROWS[i].l, F_SM, C_TXT2, AL_L, 118);
+        g.text(MX + CWID - 12, y + 15, INFO_ROWS[i].v(), F_SM, C_TXT, AL_R, CWID - 146);
+      }
+    }
+    void tick(uint32_t now) override {
+      if(now - _t < 500) return;
+      _t = now;
+      for(uint8_t i = 0; i < 8; i++){
+        uint32_t h = 2166136261UL;
+        for(const char* v = INFO_ROWS[i].v(); v && *v; v++) h = (h ^ (uint8_t)*v) * 16777619UL;
+        if(h != _h[i]){ if(_sig) M.inval(Rect(0, 4 + i * 22, SW, 22)); _h[i] = h; }
+      }
+      _sig = 1;
+    }
+  private:
+    uint32_t _t = 0, _h[8] = { 0 };
+    uint8_t _sig = 0;
 };
-static ListPage s_info("Про радіо", s_infoItems, sizeof(s_infoItems) / sizeof(s_infoItems[0]));
+static InfoPage s_info;
 Page& pgInfo = s_info;
 
 /*  =================== «Живлення» =================== */

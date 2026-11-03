@@ -20,14 +20,6 @@ extern DspCore dsp;
 namespace m2 {
 
 /*  =================== сторінка «Оновлення» =================== */
-static const char* vGh(){
-  static char b[48];
-  if(ota.state() == OTA_CHECKING) return "перевіряю…";
-  if(!ota.latest()[0]) return "ще не перевіряли";
-  if(!ota.hasFile()) return "для цієї плати ще немає";   /* випуск інших плат — не наш */
-  snprintf(b, sizeof(b), "%s%s", ota.latest(), ota.available() ? " — новіша" : "");
-  return b;
-}
 static const char* vUpdNote(){
   static char b[200];
   switch(ota.state()){
@@ -35,44 +27,66 @@ static const char* vUpdNote(){
     case OTA_LATEST:   return ota.hasFile() ? "у радіо остання версія" : "випусків для цієї плати ще не було";
     case OTA_ERROR:    snprintf(b, sizeof(b), tr("не вийшло: %s"), tr(ota.error())); return b;
     case OTA_AVAILABLE: {
-      /*  перші рядки опису випуску  */
-      const char* s = ota.notes(); size_t n = 0; uint8_t lines = 0;
-      while(s[n] && lines < 2 && n < sizeof(b) - 1){ if(s[n] == '\n') lines++; n++; }
-      if(!n) return "вийшла нова версія";
-      memcpy(b, s, n); b[n] = 0;
-      while(n && (b[n - 1] == '\n' || b[n - 1] == ' ')) b[--n] = 0;
+      /*  перший рядок опису й нагадування, що нічого не загубиться (сторінка — на один екран, окремого рядка нема)  */
+      const char* s1 = ota.notes(); size_t k = 0;
+      while(s1[k] && s1[k] != '\n' && k < 90) k++;
+      if(!k) return "вийшла нова версія\nстанції й налаштування лишаються";
+      memcpy(b, s1, k); b[k] = 0;
+      snprintf(b + k, sizeof(b) - k, "\n%s", tr("станції й налаштування лишаються"));
       return b;
     }
     default: return ota.available() ? "вийшла нова версія" : "радіо саме перевіряє GitHub двічі на добу";
   }
 }
 static const char* vInstall(){ static char b[48]; snprintf(b, sizeof(b), tr("Встановити %s"), ota.latest()); return b; }
+/*  Одна кнопка: є новіша — встановити, інакше — перевірити (сторінка на один екран, 03.11.2026).  */
+static bool updReady(){ return ota.available() && !ota.installing(); }
+static const char* vUpdBtn(){ return updReady() ? vInstall() : "Перевірити зараз"; }
+/*  GitHub коротко — повне пояснення в рядку нижче  */
+static const char* vGhShort(){
+  if(ota.state() == OTA_CHECKING) return "…";
+  if(!ota.latest()[0]) return "—";
+  if(!ota.hasFile()) return "немає";
+  return ota.latest();
+}
+static void verRow(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
+  const int16_t hw = w / 2;
+  g.fill(x + hw, y + 8, 1, h - 16, C_LINE);
+  g.text(x + 14, y + h / 2 + 4, "У радіо", F_ROW, C_TXT, AL_L, hw - 80);
+  g.text(x + hw - 12, y + h / 2 + 4, prVersion(), F_ROW, C_TXT2, AL_R, 60);
+  g.text(x + hw + 14, y + h / 2 + 4, "GitHub", F_ROW, C_TXT, AL_L, hw - 80);
+  g.text(x + w - 12, y + h / 2 + 4, vGhShort(), F_ROW, ota.available() ? C_ACC : C_TXT2, AL_R, 60);
+}
 
+/*  Чотири рядки на один екран (раніше з розділами й поясненнями — 352, треба було гортати).  */
 static Item s_updItems[] = {
-  iSection("ПРОШИВКА"),
-  iInfo("У радіо", [](){ return prVersion(); }),
-  iInfo("На GitHub", vGh),
+  [](){ Item i = iCustom(44, verRow); i.color = 1; return i; }(),
   iNote(vUpdNote, 36),
-  iButton("Перевірити зараз", IC_REFRESH, [](){ ota.check(extras.s.otaBeta); }),
-  iButton("Встановити", IC_DOWN, [](){ ota.install(); M.closeNow(); }),
-  iNote([](){ return "станції, мережі, обране й налаштування лишаються;\nпід час оновлення радіо не вимикати"; }, 36),
-  iSection("КАНАЛ"),
+  iButton("Перевірити зараз", IC_REFRESH, [](){ if(updReady()){ ota.install(); M.closeNow(); } else ota.check(extras.s.otaBeta); }),
   iSwitch("Пробні версії", IC_CODE, C_ORANGE, [](){ return (int32_t)extras.s.otaBeta; },
-          [](int32_t v){ extras.s.otaBeta = v ? 1 : 0; extras.changed(); ota.check(extras.s.otaBeta); }),
-  iNote([](){ return extras.s.otaBeta ? "пропонувати й попередні випуски —\nще не перевірені для всіх"
-                                      : "лише випуски для всіх;\nувімкніть, щоб ставити пробні"; }, 36),
+          [](int32_t v){ extras.s.otaBeta = v ? 1 : 0; extras.changed(); ota.check(extras.s.otaBeta);
+                         M.toast(v ? "пропонувати й пробні випуски" : "лише випуски для всіх"); }),
 };
 
 class UpdatePage : public ListPage {
   public:
     UpdatePage() : ListPage("Оновлення", s_updItems, sizeof(s_updItems) / sizeof(s_updItems[0])) {}
     void enter() override {
-      s_updItems[4].enabled = [](){ return !ota.busy(); };
-      s_updItems[5].show = [](){ return ota.available() && !ota.installing(); };
-      s_updItems[5].text = vInstall;
+      s_updItems[2].enabled = [](){ return updReady() || !ota.busy(); };
+      s_updItems[2].text = vUpdBtn;
       ListPage::enter();
+      _sig = 0;
       if(!ota.busy() && (!ota.checkedAt() || millis() - ota.checkedAt() > 600000UL)) ota.check(extras.s.otaBeta);
     }
+    void tick(uint32_t now) override {
+      ListPage::tick(now);
+      /*  рядок версій — власний: перемалювати, коли GitHub відповів  */
+      uint32_t s = ota.state() * 7 + (ota.available() ? 1 : 0) + (ota.hasFile() ? 2 : 0);
+      for(const char* p = ota.latest(); *p; p++) s = s * 31 + (uint8_t)*p;
+      if(s != _sig){ if(_sig) M.inval(Rect(0, s_updItems[0].y, SW, s_updItems[0].hh)); _sig = s; }
+    }
+  private:
+    uint32_t _sig = 0;
 };
 static UpdatePage s_update;
 Page& pgUpdate = s_update;

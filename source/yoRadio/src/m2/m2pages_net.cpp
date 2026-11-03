@@ -17,6 +17,26 @@ static char s_kbdTitle[64];
 static void afterPass(bool ok){ if(ok) connectNow(); }
 
 /*  =================== «Wi-Fi» =================== */
+/*  Поточна мережа й два розділи — на один екран (власник 03.11.2026: «розбий довгі сторінки налаштувань на
+    підсторінки»). Список мереж поруч — окрема сторінка: він буває довгим, і там його можна гортати.  */
+static void wifiCard(Gfx& g){
+  char b[128];
+  if(!g.visible(MX, 4, CWID, 54)) return;
+  const bool up = WB::staUp();
+  g.box(MX, 4, CWID, 54, R_CARD, C_SURF);
+  drawBadge(g, MX + 12, 17, IC_WIFI, up ? C_TEAL : C_GREY);
+  g.text(MX + 50, 27, up ? WB::curSsid() : "не підключено", F_ROWB, C_TXT, AL_L, CWID - 64);
+  if(up) snprintf(b, sizeof(b), tr("підключено · %s"), WB::ip());
+  else snprintf(b, sizeof(b), WB::apLock() ? "виберіть мережу, щоб радіо почало грати" : "радіо зараз не в мережі");
+  g.text(MX + 50, 45, b, F_SM, up ? C_TEAL : C_TXT2, AL_L, CWID - 64);
+}
+static uint32_t wifiSig(){
+  uint32_t s = WB::scanCount() * 7 + (WB::scanning() ? 1 : 0) + (WB::staUp() ? 1000 : 0) + WB::savedCount() * 13;
+  for(uint8_t i = 0; i < WB::scanCount(); i++){ const char* p = WB::scanSsid(i); while(*p) s = s * 31 + (uint8_t)*p++; s += (WB::scanRssi(i) + 100) / 10; }
+  const char* c = WB::curSsid(); while(*c) s = s * 31 + (uint8_t)*c++;
+  return s;
+}
+
 class WifiPage : public Page {
   public:
     const char* title() override { return "Wi-Fi"; }
@@ -24,99 +44,49 @@ class WifiPage : public Page {
     void leave() override { WB::pages(false, false); }
     bool canBack() override { return !WB::apLock(); }
     bool keepOpen() override { return true; }
-    int16_t height() override { uint8_t n = WB::scanCount(); int16_t h = ROWS0 + (n ? n : 1) * RH + 12 + 3 * 44 + 12; return h < CH ? CH : h; }
+    bool scrollable() override { return false; }
     void draw(Gfx& g) override;
-    void tick(uint32_t now) override;
+    void tick(uint32_t now) override { if(now - _sigT < 200) return; _sigT = now; const uint32_t s = wifiSig(); if(s != _sig){ _sig = s; M.invalAll(); } }
     void loop(uint32_t now) override;
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override;
     void tap(int16_t id, int16_t x, int16_t y) override;
   private:
-    static const int16_t ROWS0 = 4 + 54 + 30, RH = 42;
+    static const int16_t AY = 4 + 54 + 10;
     uint32_t _sig = 0, _sigT = 0;
-    int16_t actY(){ uint8_t n = WB::scanCount(); return ROWS0 + (n ? n : 1) * RH + 12; }
 };
 
 void WifiPage::draw(Gfx& g){
-  char b[128];
-  /*  поточна мережа  */
-  if(g.visible(MX, 4, CWID, 54)){
-    bool up = WB::staUp();
-    g.box(MX, 4, CWID, 54, R_CARD, C_SURF);
-    drawBadge(g, MX + 12, 17, IC_WIFI, up ? C_TEAL : C_GREY);
-    g.text(MX + 50, 27, up ? WB::curSsid() : "не підключено", F_ROWB, C_TXT, AL_L, CWID - 64);
-    if(up) snprintf(b, sizeof(b), tr("підключено · %s"), WB::ip());
-    else snprintf(b, sizeof(b), WB::apLock() ? "виберіть мережу, щоб радіо почало грати" : "радіо зараз не в мережі");
-    g.text(MX + 50, 45, b, F_SM, up ? C_TEAL : C_TXT2, AL_L, CWID - 64);
-  }
-  g.text(MX + 12, ROWS0 - 9, "ПОРУЧ", F_SMB, C_TXT2);
-  if(WB::scanning()) g.text(MX + CWID - 12, ROWS0 - 9, "шукаю…", F_SM, C_ACC, AL_R);
-  uint8_t n = WB::scanCount();
-  if(!n){
-    int16_t y = ROWS0;
-    if(g.visible(MX, y, CWID, RH)){
-      g.box(MX, y, CWID, RH, R_CARD, C_SURF);
-      g.text(MX + 14, y + 26, WB::scanning() ? "шукаю мережі…" : "мереж не знайдено", F_ROW, C_TXT2);
-    }
-  }
-  for(uint8_t i = 0; i < n; i++){
-    int16_t y = ROWS0 + i * RH;
-    if(!g.visible(MX, y, CWID, RH)) continue;
-    drawCard(g, MX, y, CWID, RH, i == 0, i == n - 1);
-    if(i) g.fill(MX + 14, y, CWID - 14, 1, C_LINE);
-    const char* s = WB::scanSsid(i);
-    bool cur = WB::staUp() && !strcmp(s, WB::curSsid());
-    bool saved = WB::isSaved(s);
-    int8_t rs = WB::scanRssi(i);
-    uint8_t lv = rs > -55 ? 4 : rs > -65 ? 3 : rs > -75 ? 2 : rs > -85 ? 1 : 0;
-    signalBars(g, MX + CWID - 32, y + 27, lv, C_TXT, C_SURF2);
-    int16_t right = MX + CWID - 40;
-    if(!WB::scanOpen(i)){ icon(g, IC_LOCK, right - 6, y + 21, C_TXT2, C_SURF); right -= 18; }
-    if(cur){ icon(g, IC_CHECK, right - 8, y + 21, C_TEAL, C_SURF); right -= 20; }
-    else if(saved){ g.circle(right - 5, y + 21, 3, C_ACC); right -= 14; }
-    g.text(MX + 14, y + 26, s, F_ROW, cur ? C_TEAL : C_TXT, AL_L, right - MX - 20);
-  }
-  static const char* A[3] = { "Шукати ще раз", "Додати вручну", "Відомі мережі" };
-  static const uint8_t AI[3] = { IC_REFRESH, IC_KEYS, IC_LIST };
-  int16_t ay = actY();
-  for(uint8_t i = 0; i < 3; i++){
-    int16_t y = ay + i * 44;
+  char b[24];
+  wifiCard(g);
+  static const char* A[2] = { "Мережі поруч", "Відомі мережі" };
+  static const uint8_t AI[2] = { IC_WIFI, IC_LIST };
+  for(uint8_t i = 0; i < 2; i++){
+    const int16_t y = AY + i * 44;
     if(!g.visible(MX, y, CWID, 44)) continue;
-    drawCard(g, MX, y, CWID, 44, i == 0, i == 2);
+    drawCard(g, MX, y, CWID, 44, i == 0, i == 1);
     if(i) g.fill(MX + 50, y, CWID - 50, 1, C_LINE);
-    drawBadge(g, MX + 12, y + 8, AI[i], i == 0 ? C_BLUE : i == 1 ? C_GREY : C_TEAL);
-    g.text(MX + 50, y + 26, A[i], F_ROW, (i == 0 && WB::scanning()) ? C_TXT3 : C_TXT);
-    if(i == 2){ snprintf(b, sizeof(b), "%u", (unsigned)WB::savedCount()); g.text(MX + CWID - 28, y + 26, b, F_SM, C_TXT2, AL_R); }
+    drawBadge(g, MX + 12, y + 8, AI[i], i == 0 ? (WB::apLock() ? C_ACC : C_BLUE) : C_TEAL);
+    g.text(MX + 50, y + 26, A[i], F_ROW, C_TXT);
+    if(i == 0){
+      if(WB::scanning()) snprintf(b, sizeof(b), "%s", tr("шукаю…"));
+      else snprintf(b, sizeof(b), "%u", (unsigned)WB::scanCount());
+    }else snprintf(b, sizeof(b), "%u", (unsigned)WB::savedCount());
+    g.text(MX + CWID - 28, y + 26, b, F_SM, C_TXT2, AL_R);
     icon(g, IC_CHEV, MX + CWID - 16, y + 22, C_TXT2, C_SURF);
   }
 }
 
-void WifiPage::tick(uint32_t now){
-  if(now - _sigT < 200) return;
-  _sigT = now;
-  uint32_t s = WB::scanCount() * 7 + (WB::scanning() ? 1 : 0) + (WB::staUp() ? 1000 : 0) + WB::savedCount() * 13;
-  for(uint8_t i = 0; i < WB::scanCount(); i++){ const char* p = WB::scanSsid(i); while(*p) s = s * 31 + (uint8_t)*p++; s += (WB::scanRssi(i) + 100) / 10; }
-  const char* c = WB::curSsid(); while(*c) s = s * 31 + (uint8_t)*c++;
-  if(s != _sig){ _sig = s; M.invalAll(); }
-}
-
+/*  без мережі меню не мало виходу; радіо саме повернулось у збережену — відпускаємо на плеєр  */
 void WifiPage::loop(uint32_t now){
   (void)now;
-  /*  без мережі меню не мало виходу; радіо саме повернулось у збережену — відпускаємо на плеєр  */
   if(WB::apLock() && network.status == CONNECTED){ WB::apUnlock(); M.close(); }
 }
 
 int16_t WifiPage::hit(int16_t x, int16_t y, Rect& r, uint8_t& radius){
   (void)x;
-  uint8_t n = WB::scanCount();
-  if(y >= ROWS0 && y < ROWS0 + n * RH){
-    int16_t i = (y - ROWS0) / RH;
-    r = Rect(MX, ROWS0 + i * RH, CWID, RH); radius = (i == 0 || i == n - 1) ? R_CARD : 0;
-    return i;
-  }
-  int16_t ay = actY();
-  if(y >= ay && y < ay + 3 * 44){
-    int16_t i = (y - ay) / 44;
-    r = Rect(MX, ay + i * 44, CWID, 44); radius = (i == 0 || i == 2) ? R_CARD : 0;
+  if(y >= AY && y < AY + 2 * 44){
+    const int16_t i = (y - AY) / 44;
+    r = Rect(MX, AY + i * 44, CWID, 44); radius = R_CARD;
     return 100 + i;
   }
   return -1;
@@ -124,8 +94,89 @@ int16_t WifiPage::hit(int16_t x, int16_t y, Rect& r, uint8_t& radius){
 
 void WifiPage::tap(int16_t id, int16_t x, int16_t y){
   (void)x; (void)y;
+  if(id == 100){ M.push(&pgWifiScan); return; }
+  if(id == 101){ WB::load(); M.push(&pgSaved); return; }
+}
+
+static WifiPage s_wifi;
+Page& pgWifi = s_wifi;
+
+/*  =================== «Мережі поруч» =================== */
+class WifiScanPage : public Page {
+  public:
+    const char* title() override { return "Мережі поруч"; }
+    void enter() override { WB::pages(true, false); if(!WB::scanning() && !WB::scanCount()) WB::scanStart(); _sig = 0; }
+    bool canBack() override { return true; }
+    bool keepOpen() override { return true; }
+    int16_t height() override { const uint8_t n = WB::scanCount(); const int16_t h = ROWS0 + (n ? n : 1) * RH + 12; return h < CH ? CH : h; }
+    void draw(Gfx& g) override;
+    void tick(uint32_t now) override { if(now - _sigT < 200) return; _sigT = now; const uint32_t s = wifiSig(); if(s != _sig){ _sig = s; M.invalAll(); } }
+    void loop(uint32_t now) override { (void)now; if(WB::apLock() && network.status == CONNECTED){ WB::apUnlock(); M.close(); } }
+    int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override;
+    void tap(int16_t id, int16_t x, int16_t y) override;
+  private:
+    static const int16_t ROWS0 = 4 + 40 + 10, RH = 42;
+    uint32_t _sig = 0, _sigT = 0;
+};
+
+void WifiScanPage::draw(Gfx& g){
+  /*  угорі — дві кнопки: шукати ще раз і додати вручну (мережа, що не показує назви)  */
+  const int16_t bw = (CWID - 8) / 2;
+  for(uint8_t i = 0; i < 2; i++){
+    const int16_t x = MX + i * (bw + 8);
+    if(!g.visible(x, 4, bw, 40)) continue;
+    const bool dim = i == 0 && WB::scanning();
+    g.box(x, 4, bw, 40, R_BTN, C_SURF2);
+    icon(g, i == 0 ? IC_REFRESH : IC_KEYS, x + 20, 24, dim ? C_TXT3 : C_ACC, C_SURF2);
+    g.text(x + 36, 28, i == 0 ? (WB::scanning() ? "шукаю…" : "Шукати ще раз") : "Додати вручну", F_SMB, dim ? C_TXT3 : C_TXT, AL_L, bw - 44);
+  }
+  const uint8_t n = WB::scanCount();
+  if(!n){
+    if(g.visible(MX, ROWS0, CWID, RH)){
+      g.box(MX, ROWS0, CWID, RH, R_CARD, C_SURF);
+      g.text(MX + 14, ROWS0 + 26, WB::scanning() ? "шукаю мережі…" : "мереж не знайдено", F_ROW, C_TXT2);
+    }
+    return;
+  }
+  for(uint8_t i = 0; i < n; i++){
+    const int16_t y = ROWS0 + i * RH;
+    if(!g.visible(MX, y, CWID, RH)) continue;
+    drawCard(g, MX, y, CWID, RH, i == 0, i == n - 1);
+    if(i) g.fill(MX + 14, y, CWID - 14, 1, C_LINE);
+    const char* s = WB::scanSsid(i);
+    const bool cur = WB::staUp() && !strcmp(s, WB::curSsid());
+    const bool saved = WB::isSaved(s);
+    const int8_t rs = WB::scanRssi(i);
+    const uint8_t lv = rs > -55 ? 4 : rs > -65 ? 3 : rs > -75 ? 2 : rs > -85 ? 1 : 0;
+    signalBars(g, MX + CWID - 32, y + 27, lv, C_TXT, C_SURF2);
+    int16_t right = MX + CWID - 40;
+    if(!WB::scanOpen(i)){ icon(g, IC_LOCK, right - 6, y + 21, C_TXT2, C_SURF); right -= 18; }
+    if(cur){ icon(g, IC_CHECK, right - 8, y + 21, C_TEAL, C_SURF); right -= 20; }
+    else if(saved){ g.circle(right - 5, y + 21, 3, C_ACC); right -= 14; }
+    g.text(MX + 14, y + 26, s, F_ROW, cur ? C_TEAL : C_TXT, AL_L, right - MX - 20);
+  }
+}
+
+int16_t WifiScanPage::hit(int16_t x, int16_t y, Rect& r, uint8_t& radius){
+  const int16_t bw = (CWID - 8) / 2;
+  if(y >= 4 && y < 44){
+    const int16_t i = x < MX + bw + 4 ? 0 : 1;
+    r = Rect(MX + i * (bw + 8), 4, bw, 40); radius = R_BTN;
+    return 100 + i;
+  }
+  const uint8_t n = WB::scanCount();
+  if(y >= ROWS0 && y < ROWS0 + n * RH){
+    const int16_t i = (y - ROWS0) / RH;
+    r = Rect(MX, ROWS0 + i * RH, CWID, RH); radius = (i == 0 || i == n - 1) ? R_CARD : 0;
+    return i;
+  }
+  return -1;
+}
+
+void WifiScanPage::tap(int16_t id, int16_t x, int16_t y){
+  (void)x; (void)y;
   if(id >= 0 && id < WB::scanCount()){
-    uint8_t k = WB::pick(id);
+    const uint8_t k = WB::pick(id);
     if(k == 1){ M.push(&pgNet); return; }
     if(k == 2){ WB::connect(); M.push(&pgConnect); return; }
     snprintf(s_kbdTitle, sizeof(s_kbdTitle), tr("Пароль: %s"), WB::ssidBuf());
@@ -142,11 +193,11 @@ void WifiPage::tap(int16_t id, int16_t x, int16_t y){
     });
     return;
   }
-  if(id == 102){ WB::load(); M.push(&pgSaved); return; }
 }
 
-static WifiPage s_wifi;
-Page& pgWifi = s_wifi;
+static WifiScanPage s_wifiScan;
+Page& pgWifiScan = s_wifiScan;
+
 
 /*  =================== «Відомі мережі» =================== */
 class SavedPage : public Page {

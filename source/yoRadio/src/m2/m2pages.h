@@ -33,6 +33,26 @@ extern Page& pgNightFrom;
 extern Page& pgNightTo;
 extern Page& pgUpdate;
 extern Page& pgStations;  /* список станцій / треків картки */
+/*  Підсторінки довгих сторінок (03.11.2026: кожна сторінка налаштувань — на один екран, без прокрутки)  */
+extern Page& pgSpeakers;  /* Параметри › Колонки: DLNA, AirPlay */
+extern Page& pgSystem;    /* Параметри › Система: мова, пояс, автостарт */
+extern Page& pgNight;     /* Екран › Нічний режим */
+extern Page& pgBatLed;    /* Екран › Батарея й світлодіод */
+extern Page& pgSleep;     /* таймер сну (утримати плитку «Сон») */
+extern Page& pgSndVol;    /* Обробка › Гучність і баланс */
+extern Page& pgSndSpk;    /* Обробка › Динамік */
+extern Page& pgSndBass;   /* Обробка › Низ */
+extern Page& pgGestKind;  /* Хлопки й стук › Хлопки / Стук */
+extern Page& pgDevShow;   /* Розробник › Що показувати */
+extern Page& pgDevHw;     /* Розробник › Обладнання */
+extern Page& pgMute;      /* Розробник › Обладнання › MUTE підсилювача */
+extern Page& pgLogos;     /* Розробник › Логотипи станцій */
+extern Page& pgTouch;     /* Розробник › Сенсор */
+extern Page& pgDebug;     /* Розробник › Налагодження */
+extern Page& pgSplash;    /* Заставка й звуки › Заставка */
+extern Page& pgSfx;       /* Заставка й звуки › Звуки подій */
+extern Page& pgSfxVol;    /* Заставка й звуки › Гучність кожного звуку */
+extern Page& pgWifiScan;  /* Wi-Fi › Мережі поруч */
 
 /*  попросити список станцій (будь-яка задача); відкриває головний цикл — stationsPoll() у Menu::loop()  */
 void stationsRequest();

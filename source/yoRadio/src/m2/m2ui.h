@@ -143,6 +143,30 @@ class ListPage : public Page {
     int32_t _sliderAt(const Item& it, int16_t x) const;
 };
 
+/*  ---------- сітка розділів ---------- */
+/*  Розділ-клітинка: значок, назва, поточне значення (nullptr — без нього) і що робити на дотик.  */
+struct Cell { const char* label; uint8_t icon; uint16_t badge; TextFn value; ActFn act; };
+/*  Сторінка-сітка 2 × N замість довгого списку (власник 03.11.2026: «розбий довгі сторінки налаштувань на
+    підсторінки, щоб кожна вміщалась у екран без прокрутки»). До восьми розділів — на один екран.  */
+class GridPage : public Page {
+  public:
+    GridPage(const char* title, const Cell* cells, uint8_t n) : _title(title), _c(cells), _n(n) {}
+    const char* title() override { return _title; }
+    bool scrollable() override { return false; }
+    void enter() override { _sig = 0; }
+    void draw(Gfx& g) override;
+    void tick(uint32_t now) override;
+    int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override;
+    void tap(int16_t id, int16_t x, int16_t y) override;
+    void dump() override;
+  private:
+    const char* _title;
+    const Cell* _c;
+    uint8_t _n;
+    uint32_t _sig = 0, _sigT = 0;
+    Rect _cell(uint8_t i) const;
+};
+
 /*  ---------- спільні елементи (для власних сторінок) ---------- */
 void drawSwitch(Gfx& g, int16_t x, int16_t y, float pos, bool enabled = true);   /* 40×24 */
 void drawSeg(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h, const char* const* opts, uint8_t n, float pos, bool enabled = true);

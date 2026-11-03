@@ -936,11 +936,17 @@ void yodbgLoop(){
       /*  нове меню одразу на сторінці: m2 <номер> (0 меню, 1 параметри, 2 екран, 3 будильник, 4 обране, 5 проповіді,
           6 про радіо, 7 живлення, 8 пояс, 9 еквалайзер, 10 обробка, 11 кімната, 12 мікрофон, 13 жести, 14 присутність,
           15 wi-fi, 16 відомі, 17 розробник, 18 заставка й звуки, 19 аудіовихід, 20 ніч з, 21 ніч до, 22 схема ЦАП,
-          23 мережа, 24 оновлення, 25 станції)  */
+          23 мережа, 24 оновлення, 25 станції; підсторінки 03.11: 26 колонки, 27 система, 28 нічний режим,
+          29 батарея й світлодіод, 30 таймер сну, 31 гучність і баланс, 32 динамік, 33 низ, 34 хлопки/стук,
+          35 що показувати, 36 обладнання, 37 MUTE, 38 логотипи, 39 сенсор, 40 налагодження, 41 заставка,
+          42 звуки подій, 43 гучність кожного звуку, 44 мережі поруч)  */
       static m2::Page* const P[] = { &m2::pgPult, &m2::pgSettings, &m2::pgScreen, &m2::pgAlarm, &m2::pgFav, &m2::pgSermons,
         &m2::pgInfo, &m2::pgPower, &m2::pgTz, &m2::pgEq, &m2::pgSound, &m2::pgRoom, &m2::pgMic, &m2::pgGest, &m2::pgPres,
         &m2::pgWifi, &m2::pgSaved, &m2::pgDev, &m2::pgDevSnd, &m2::pgDac, &m2::pgNightFrom, &m2::pgNightTo, &m2::pgDacInfo,
-        &m2::pgNet, &m2::pgUpdate, &m2::pgStations };
+        &m2::pgNet, &m2::pgUpdate, &m2::pgStations,
+        &m2::pgSpeakers, &m2::pgSystem, &m2::pgNight, &m2::pgBatLed, &m2::pgSleep, &m2::pgSndVol, &m2::pgSndSpk, &m2::pgSndBass,
+        &m2::pgGestKind, &m2::pgDevShow, &m2::pgDevHw, &m2::pgMute, &m2::pgLogos, &m2::pgTouch, &m2::pgDebug, &m2::pgSplash,
+        &m2::pgSfx, &m2::pgSfxVol, &m2::pgWifiScan };
       int n = atoi(buf + 3);
       if(n >= 0 && n < (int)(sizeof(P) / sizeof(P[0]))){
         if(!m2::M.active()) m2::M.open(n == 0 ? P[0] : &m2::pgPult);

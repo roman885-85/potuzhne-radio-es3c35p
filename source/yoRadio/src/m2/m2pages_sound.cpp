@@ -157,6 +157,7 @@ static EqPage s_eq;
 Page& pgEq = s_eq;
 
 /*  =================== «Обробка» =================== */
+/*  Три розділи — кожен на один екран (власник 03.11.2026: «розбий довгі сторінки налаштувань на підсторінки»).  */
 static const char* const GUARD_LBL[3] = { "вимк", "м'який", "сильний" };
 static const char* const VB_LBL[4]    = { "вимк", "1", "2", "3" };
 static const char* const LOUD_LBL[3]  = { "вимк", "м'яка", "сильна" };
@@ -164,36 +165,77 @@ static const char* const BASS_LBL[2]  = { "м'який", "як був" };
 static void sndChanged(){ extras.changed(); yoDsp.changed(); }
 /*  Захист динаміка діє лише там, де динамік: вбудований чи MAX98357A. З ЦАП на лінію
     перемикач нічого не міняв — власник 26.10.2026: «функції обробки не працюють». Кажемо прямо.  */
+static bool spkOut(){ return extras.s.dac == 0 || extras.s.dac == 3; }
 static const char* vGuardNote(){
-  return (extras.s.dac == 0 || extras.s.dac == 3) ? "зрізає низ, який динамік не грає, а хрипить"
-                                                  : "ЦАП на лінію: захист не потрібен";
+  return spkOut() ? "зрізає низ, який динамік не грає, а хрипить"
+                  : "ЦАП на лінію: захист не потрібен";
+}
+static const char* vVbNote(){
+  return spkOut() ? "низ, що зрізано, — гармоніками: вухо саме добудує"
+                  : "колонкам через ЦАП зазвичай не потрібен";
 }
 /*  Максимальна гучність: повзунок гучності на 100 % дає стільки від повної (extras/yoDsp, volMaxK).  */
 static const char* vVolMaxNote(){
   return extras.s.volMax < 100 ? "повзунок гучності на 100 % дасть стільки від повної —\nдля станцій, картки, AirPlay, будильника й звуків"
                                : "100 % — без обмеження";
 }
+static const char* vSndVol(){
+  static char b[48];
+  const int8_t bal = config.store.balance;
+  if(extras.s.volMax < 100) snprintf(b, sizeof(b), tr("макс %u %%"), (unsigned)extras.s.volMax);
+  else snprintf(b, sizeof(b), "%s", tr("без обмеження"));
+  if(bal){ const size_t n = strlen(b); snprintf(b + n, sizeof(b) - n, tr(" · баланс %+d"), (int)bal); }
+  return b;
+}
+static const char* vSndSpk(){
+  static char b[48];
+  snprintf(b, sizeof(b), "%s · %s %s", spkOut() ? tr(GUARD_LBL[extras.s.eqGuard < 3 ? extras.s.eqGuard : 0]) : tr("ЦАП на лінію"),
+           tr("бас"), tr(VB_LBL[extras.s.vbass < 4 ? extras.s.vbass : 0]));
+  return b;
+}
+static const char* vSndBass(){
+  static char b[48];
+  snprintf(b, sizeof(b), "%s · %s", tr(BASS_LBL[extras.s.bassOld ? 1 : 0]), tr(LOUD_LBL[extras.s.eqLoud < 3 ? extras.s.eqLoud : 0]));
+  return b;
+}
 static Item s_sndItems[] = {
-  iSection("ГУЧНІСТЬ"),
-  iSlider("Максимальна гучність", 5, 100, [](){ return (int32_t)extras.s.volMax; },
-          [](int32_t v){ extras.s.volMax = (uint8_t)v; extras.changed(); yoDsp.volMaxChanged(); }, "%"),
-  iNote(vVolMaxNote, 36),
-  iSection("ДИНАМІК"),
-  iSeg("Захист динаміка", GUARD_LBL, 3, [](){ return (int32_t)extras.s.eqGuard; }, [](int32_t v){ extras.s.eqGuard = v; sndChanged(); }),
-  iNote(vGuardNote, 22),
-  iSeg("Віртуальний бас", VB_LBL, 4, [](){ return (int32_t)extras.s.vbass; }, [](int32_t v){ extras.s.vbass = v; sndChanged(); }),
-  iSeg("Тонкомпенсація, коли тихо", LOUD_LBL, 3, [](){ return (int32_t)extras.s.eqLoud; }, [](int32_t v){ extras.s.eqLoud = v; sndChanged(); }),
-  /*  «Низ» (власник 03.11.2026: «замість м'якого басу різкі завали й рипіння по низах»): м'який — нова обробка
-      (extras/yoDsp: стеля підйому, зріз інфразвуку, м'яка поправка під кімнату, чистіший віртуальний бас);
-      «як був» — попередня, щоб повернути одним дотиком  */
-  iSeg("Низ", BASS_LBL, 2, [](){ return (int32_t)extras.s.bassOld; }, [](int32_t v){ extras.s.bassOld = (uint8_t)v; sndChanged(); }),
-  iNote([](){ return extras.s.bassOld ? "як до 03.11: без стелі й зрізу, повна поправка під кімнату"
-                                      : "без гуркоту й рипіння: підйом низу до +10 дБ"; }, 22),
-  iSection("СТЕРЕО"),
-  iSlider("Баланс", -16, 16, [](){ return (int32_t)config.store.balance; }, [](int32_t v){ config.setBalance((int8_t)v); }),
+  iNav("Гучність і баланс", IC_SPEAKER, C_BLUE, vSndVol, [](){ M.push(&pgSndVol); }),
+  iNav("Динамік", IC_SPEAKER, C_TEAL, vSndSpk, [](){ M.push(&pgSndSpk); }),
+  iNav("Низ", IC_EQ, C_ORANGE, vSndBass, [](){ M.push(&pgSndBass); }),
 };
 static ListPage s_sound("Обробка", s_sndItems, sizeof(s_sndItems) / sizeof(s_sndItems[0]));
 Page& pgSound = s_sound;
+
+static Item s_sndVolItems[] = {
+  iSlider("Максимальна гучність", 5, 100, [](){ return (int32_t)extras.s.volMax; },
+          [](int32_t v){ extras.s.volMax = (uint8_t)v; extras.changed(); yoDsp.volMaxChanged(); }, "%"),
+  iNote(vVolMaxNote, 36),
+  iSlider("Баланс", -16, 16, [](){ return (int32_t)config.store.balance; }, [](int32_t v){ config.setBalance((int8_t)v); }),
+};
+static ListPage s_sndVol("Гучність і баланс", s_sndVolItems, sizeof(s_sndVolItems) / sizeof(s_sndVolItems[0]));
+Page& pgSndVol = s_sndVol;
+
+static Item s_sndSpkItems[] = {
+  iSeg("Захист динаміка", GUARD_LBL, 3, [](){ return (int32_t)extras.s.eqGuard; }, [](int32_t v){ extras.s.eqGuard = v; sndChanged(); }),
+  iNote(vGuardNote, 22),
+  iSeg("Віртуальний бас", VB_LBL, 4, [](){ return (int32_t)extras.s.vbass; }, [](int32_t v){ extras.s.vbass = v; sndChanged(); }),
+  iNote(vVbNote, 22),
+};
+static ListPage s_sndSpk("Динамік", s_sndSpkItems, sizeof(s_sndSpkItems) / sizeof(s_sndSpkItems[0]));
+Page& pgSndSpk = s_sndSpk;
+
+/*  «Низ» (власник 03.11.2026: «замість м'якого басу різкі завали й рипіння по низах»): м'який — нова обробка
+    (extras/yoDsp: стеля підйому, зріз інфразвуку, м'яка поправка під кімнату, чистіший віртуальний бас);
+    «як був» — попередня, щоб повернути одним дотиком  */
+static Item s_sndBassItems[] = {
+  iSeg("Низ", BASS_LBL, 2, [](){ return (int32_t)extras.s.bassOld; }, [](int32_t v){ extras.s.bassOld = (uint8_t)v; sndChanged(); }),
+  iNote([](){ return extras.s.bassOld ? "як до 03.11: без стелі й зрізу, повна поправка під кімнату"
+                                      : "без гуркоту й рипіння: підйом низу до +10 дБ"; }, 22),
+  iSeg("Тонкомпенсація, коли тихо", LOUD_LBL, 3, [](){ return (int32_t)extras.s.eqLoud; }, [](int32_t v){ extras.s.eqLoud = v; sndChanged(); }),
+  iNote([](){ return "на тихій гучності підіймає низ і верх, як їх чує вухо"; }, 22),
+};
+static ListPage s_sndBass("Низ", s_sndBassItems, sizeof(s_sndBassItems) / sizeof(s_sndBassItems[0]));
+Page& pgSndBass = s_sndBass;
 
 /*  =================== «Під кімнату» =================== */
 static char s_rmErr[96] = { 0 };          /* кирилиця — по два байти на літеру */
@@ -294,16 +336,15 @@ static void micMeter(Gfx& g, int16_t x, int16_t y, int16_t w, int16_t h){
   else                                                  snprintf(t, sizeof(t), "слухаю");
   g.text(x + 14, y + h - 9, t, F_SM, C_TXT2, AL_L, w - 28);
 }
+/*  «Слухати» й «Слухати й під час звуку» — один вибір із трьох: сторінка стає на екран (03.11.2026).
+    Хлопки й присутність — плитками в «Параметрах».  */
+static const char* const LISTEN_LBL[3] = { "вимк", "коли тихо", "завжди" };
 static Item s_micItems[] = {
-  iGap(4),
-  iSwitch("Слухати", IC_MIC, C_VIOLET, [](){ return (int32_t)extras.s.micOn; }, [](int32_t v){ extras.s.micOn = v; extras.changed(); mic.apply(); }),
+  iSeg("Слухати", LISTEN_LBL, 3, [](){ return (int32_t)(!extras.s.micOn ? 0 : extras.s.micPlay ? 2 : 1); },
+       [](int32_t v){ ExtStore& e = extras.s; e.micOn = v > 0; if(v > 0) e.micPlay = v == 2; extras.changed(); mic.apply(); }),
   [](){ Item i = iCustom(40, micMeter); i.color = 1; return i; }(),
   iSeg("Чутливість", GAIN_LBL, 4, [](){ for(uint8_t i = 0; i < 4; i++) if(GAIN_VAL[i] == extras.s.micGain) return (int32_t)i; return (int32_t)1; },
        [](int32_t v){ extras.s.micGain = GAIN_VAL[v]; extras.changed(); mic.apply(); }),
-  iSwitch("Слухати й під час звуку", IC_SPEAKER, C_VIOLET, [](){ return (int32_t)extras.s.micPlay; }, [](int32_t v){ extras.s.micPlay = v; extras.changed(); }),
-  iSection("ЩО ВМІЄ"),
-  iNav("Хлопки й стук", IC_HAND, C_VIOLET, nullptr, [](){ M.push(&pgGest); }),
-  iNav("Присутність", IC_PERSON, C_VIOLET, nullptr, [](){ M.push(&pgPres); }),
 };
 class MicPage : public ListPage {
   public:
@@ -311,15 +352,13 @@ class MicPage : public ListPage {
     void tick(uint32_t now) override {
       ListPage::tick(now);
       static uint32_t t = 0;
-      if(now - t >= 150){ t = now; const Item& it = s_micItems[2]; M.inval(Rect(0, it.y, SW, it.hh)); }
+      if(now - t >= 150){ t = now; const Item& it = s_micItems[1]; M.inval(Rect(0, it.y, SW, it.hh)); }
     }
 };
 static MicPage s_mic;
 Page& pgMic = s_mic;
 
 /*  =================== «Хлопки й стук» =================== */
-static const char* const GTAB_LBL[2] = { "хлопки", "стук" };
-static const char* const SENS_LBL[3] = { "низька", "середня", "висока" };
 static const uint8_t ACT_ORDER[8] = { MA_TOGGLE, MA_NEXT, MA_PREV, MA_VOLUP, MA_VOLDN, MA_SCREEN, MA_FAV1, MA_NONE };
 static volatile uint8_t s_gKind = 0;
 
@@ -344,31 +383,35 @@ static const char* vHeard(){
   else snprintf(b, sizeof(b), "плесніть чи постукайте двічі");
   return b;
 }
+/*  Хлопки й стук — дві сторінки замість перемикача вкладок (03.11.2026: кожна сторінка на один екран).
+    Вимикач і чутливість — один вибір: «вимк» або наскільки чутливо.  */
+static const char* const SENS4_LBL[4] = { "вимк", "низька", "середня", "висока" };
+static int32_t sens4(uint8_t on, uint8_t s){ return !on ? 0 : (s == 1 ? 1 : s == 2 ? 3 : 2); }
+static const char* sensName(uint8_t on, uint8_t s){ return SENS4_LBL[sens4(on, s)]; }
 static Item s_gestItems[] = {
-  iSeg("", GTAB_LBL, 2, [](){ return (int32_t)s_gKind; }, [](int32_t v){ s_gKind = v; }),
-  iSwitch("Увімкнено", IC_HAND, C_VIOLET, [](){ return (int32_t)(s_gKind ? extras.s.knockOn : extras.s.clapOn); },
-          [](int32_t v){ ExtStore& e = extras.s; uint8_t& on = s_gKind ? e.knockOn : e.clapOn; on = v; if(on && !e.micOn){ e.micOn = 1; mic.apply(); } extras.changed(); }),
-  iSeg("Чутливість", SENS_LBL, 3, [](){ uint8_t s = s_gKind ? extras.s.knockSens : extras.s.clapSens; return (int32_t)(s == 1 ? 0 : s == 2 ? 2 : 1); },
-       [](int32_t v){ (s_gKind ? extras.s.knockSens : extras.s.clapSens) = v == 0 ? 1 : v == 2 ? 2 : 0; extras.changed(); }),
-  iSection("ЩО РОБИТИ"),
+  iSeg("Чутливість", SENS4_LBL, 4, [](){ const ExtStore& e = extras.s; return s_gKind ? sens4(e.knockOn, e.knockSens) : sens4(e.clapOn, e.clapSens); },
+       [](int32_t v){ ExtStore& e = extras.s; uint8_t& on = s_gKind ? e.knockOn : e.clapOn; uint8_t& s = s_gKind ? e.knockSens : e.clapSens;
+                      if(v <= 0) on = 0; else { on = 1; s = v == 1 ? 1 : v == 3 ? 2 : 0; if(!e.micOn){ e.micOn = 1; mic.apply(); } }
+                      extras.changed(); }),
   iCustom(46, gestRow2),
   iCustom(46, gestRow3),
   iNote(vHeard, 24),
 };
 class GestPage : public ListPage {
   public:
-    GestPage() : ListPage("Хлопки й стук", s_gestItems, sizeof(s_gestItems) / sizeof(s_gestItems[0])) {}
+    GestPage() : ListPage("Хлопки", s_gestItems, sizeof(s_gestItems) / sizeof(s_gestItems[0])) {}
+    const char* title() override { return s_gKind ? "Стук" : "Хлопки"; }
     int16_t hit(int16_t x, int16_t y, Rect& r, uint8_t& radius) override {
-      for(uint8_t k = 4; k <= 5; k++){
+      for(uint8_t k = 1; k <= 2; k++){
         const Item& it = s_gestItems[k];
         if(it.vis && y >= it.y && y < it.y + it.hh && x >= MX + 96){ r = Rect(MX + 96, it.y + 7, CWID - 106, it.hh - 14); radius = 10; return k; }
       }
       return ListPage::hit(x, y, r, radius);
     }
     void tap(int16_t id, int16_t x, int16_t y) override {
-      if(id != 4 && id != 5){ ListPage::tap(id, x, y); return; }
+      if(id != 1 && id != 2){ ListPage::tap(id, x, y); return; }
       ExtStore& e = extras.s;
-      uint8_t r = id - 4;
+      uint8_t r = id - 1;
       MicGesture gs = s_gKind ? (r ? MG_KNOCK3 : MG_KNOCK2) : (r ? MG_CLAP3 : MG_CLAP2);
       uint8_t cur = YoMic::actionFor(gs), k = 0;
       for(uint8_t i = 0; i < 8; i++) if(ACT_ORDER[i] == cur) k = i;
@@ -384,31 +427,36 @@ class GestPage : public ListPage {
       if(now - t >= 250){
         t = now;
         uint32_t s = s_gKind * 1000 + YoMic::actionFor(MG_CLAP2) + YoMic::actionFor(MG_CLAP3) * 10 + YoMic::actionFor(MG_KNOCK2) * 100 + YoMic::actionFor(MG_KNOCK3) * 7;
-        if(s != sig){ sig = s; M.inval(Rect(0, s_gestItems[4].y, SW, 92)); }
+        if(s != sig){ sig = s; M.inval(Rect(0, s_gestItems[1].y, SW, 92)); }
       }
     }
 };
-static GestPage s_gest;
+static GestPage s_gestKind;
+Page& pgGestKind = s_gestKind;
+
+static Item s_gestHubItems[] = {
+  iNav("Хлопки", IC_HAND, C_VIOLET, [](){ return sensName(extras.s.clapOn, extras.s.clapSens); }, [](){ s_gKind = 0; M.push(&pgGestKind); }),
+  iNav("Стук", IC_HAND, C_VIOLET, [](){ return sensName(extras.s.knockOn, extras.s.knockSens); }, [](){ s_gKind = 1; M.push(&pgGestKind); }),
+  iNote(vHeard, 24),
+};
+static ListPage s_gest("Хлопки й стук", s_gestHubItems, sizeof(s_gestHubItems) / sizeof(s_gestHubItems[0]));
 Page& pgGest = s_gest;
 
 /*  =================== «Присутність» =================== */
-static const char* const EARMIN_LBL[4] = { "5", "10", "15", "30" };
 static const uint8_t     EARMIN_VAL[4] = { 5, 10, 15, 30 };
 static const char* const POFF_LBL[4]   = { "ні", "5", "15", "30" };
 static const uint8_t     POFF_VAL[4]   = { 0, 5, 15, 30 };
 static void micNeeded(){ if(!extras.s.micOn){ extras.s.micOn = 1; mic.apply(); } }
+/*  Вимикач і хвилини таймера сну — один вибір «вимк / 5 / 10 / 15 / 30»: сторінка стає на екран (03.11.2026).  */
+static const char* const EAR_LBL[5] = { "вимк", "5", "10", "15", "30" };
 static Item s_presItems[] = {
-  iSection("ТАЙМЕР СНУ"),
-  iSwitch("Таймер сну слухає", IC_MOON, C_VIOLET, [](){ return (int32_t)extras.s.sleepEar; },
-          [](int32_t v){ extras.s.sleepEar = v; if(v) micNeeded(); extras.changed(); }),
-  iSeg("У кімнаті тихо, хв", EARMIN_LBL, 4, [](){ uint8_t m = extras.s.sleepEarMin ? extras.s.sleepEarMin : 10; for(uint8_t i = 0; i < 4; i++) if(EARMIN_VAL[i] == m) return (int32_t)i; return (int32_t)1; },
-       [](int32_t v){ extras.s.sleepEarMin = EARMIN_VAL[v]; extras.changed(); }),
-  iSection("ЕКРАН"),
+  iSeg("Заснути, коли в кімнаті тихо, хв", EAR_LBL, 5,
+       [](){ if(!extras.s.sleepEar) return (int32_t)0; uint8_t m = extras.s.sleepEarMin ? extras.s.sleepEarMin : 10; for(uint8_t i = 0; i < 4; i++) if(EARMIN_VAL[i] == m) return (int32_t)(i + 1); return (int32_t)2; },
+       [](int32_t v){ ExtStore& e = extras.s; if(v <= 0) e.sleepEar = 0; else { e.sleepEar = 1; e.sleepEarMin = EARMIN_VAL[v - 1]; micNeeded(); } extras.changed(); }),
   iSwitch("Голос будить екран", IC_SUN, C_VIOLET, [](){ return (int32_t)extras.s.presWake; },
           [](int32_t v){ extras.s.presWake = v; if(v) micNeeded(); extras.changed(); }),
   iSeg("Гасити екран, коли тихо, хв", POFF_LBL, 4, [](){ for(uint8_t i = 0; i < 4; i++) if(POFF_VAL[i] == extras.s.presOff) return (int32_t)i; return (int32_t)0; },
        [](int32_t v){ extras.s.presOff = POFF_VAL[v]; if(extras.s.presOff) micNeeded(); extras.changed(); }),
-  iNote([](){ return "мікрофон чує, чи є в кімнаті люди"; }, 24),
 };
 static ListPage s_pres("Присутність", s_presItems, sizeof(s_presItems) / sizeof(s_presItems[0]));
 Page& pgPres = s_pres;
