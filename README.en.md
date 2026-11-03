@@ -159,7 +159,12 @@ RXD0 (not to 3.3 V) — the wiring diagram on screen and on the web page shows i
 
 ### 1. Flash (by cable, the first time)
 
-There are no ready-made files for this board yet — [build](#building-from-source) first, then from `firmware`:
+A ready image is in the [releases](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases/latest):
+write `PotuzhneRadio-ES3C35P-full.bin` at address 0x0, e.g.
+`esptool.py --chip esp32s3 write_flash 0x0 PotuzhneRadio-ES3C35P-full.bin` (if the radio does not start after
+writing, unplug and replug the power). After that the radio updates itself: **Menu › Update**.
+
+Or [build](#building-from-source) it yourself and flash from `firmware`:
 
 ```bash
 ./flash.sh                 # full image: erases stations, networks and settings
@@ -187,7 +192,7 @@ Everything the radio writes to its console (the `##…` log and debug command re
 **TCP port 2323**. A connected client sees the log live and sends the same commands as over USB. A cable is only
 needed for the very first flashing.
 
-- **On by default.** The switch is **Menu › Settings › Developer › DEBUGGING › Wi-Fi console**; below it you see
+- **On by default.** The switch is **Menu › Settings › Developer › Debugging › Wi-Fi console**; below it you see
   who is connected.
 
   <img src="media/es3c35p/rozrobnyk-konsol.png" width="420" alt="Developer › Debugging › Wi-Fi console">
