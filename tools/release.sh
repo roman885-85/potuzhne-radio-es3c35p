@@ -92,7 +92,10 @@ fi
 
 # програма для Mac — свіжа з «Програми/», якщо її зібрано під цю версію (apps/mac-client/build.sh)
 MACAPP="$ROOT/Програми/ПОТУЖНЕ РАДІО.app"
-MAC_V="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$MACAPP/Contents/Info.plist" 2>/dev/null || true)"
+# Лише коли програма є: без файла PlistBuddy пише «File Doesn't Exist, Will Create» у stdout, і той рядок
+# ставав «версією» — випуск падав на ditto (06.11.2026).
+MAC_V=""
+[ -f "$MACAPP/Contents/Info.plist" ] && MAC_V="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$MACAPP/Contents/Info.plist" 2>/dev/null || true)"
 # Беремо програму з «Програми/» щоразу, коли вона не старіша за ту, що вже у
 # випуску: zip щоразу інший (час у файлах), тож порівнюємо номери, не байти.
 if [ -n "$MAC_V" ] && { [ -z "$M_MAC" ] || [ "$MAC_V" != "$M_MAC" ]; }; then
