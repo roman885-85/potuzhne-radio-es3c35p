@@ -117,6 +117,10 @@ static inline bool _init_async_event_queue(){
     return true;
 }
 
+uint32_t async_tcp_queue_waiting(){
+    return _async_queue ? uxQueueMessagesWaiting(_async_queue) : 0;
+}
+
 static inline bool _send_async_event(lwip_event_packet_t ** e){
     return _async_queue && xQueueSend(_async_queue, e, SEND_ASYNC_EVENT_DELAY) == pdPASS;
 }
@@ -283,6 +287,14 @@ static int8_t _tcp_poll(void * arg, struct tcp_pcb * pcb) {
 }
 
 static int8_t _tcp_recv(void * arg, struct tcp_pcb * pcb, struct pbuf *pb, int8_t err) {
+    /*  AsyncClient::_close() у потоці AsyncTCP знімає обробники lwIP по одному — спершу tcp_arg(NULL), потім
+        tcp_recv(NULL). Коли між ними приходить FIN, lwIP кличе нас з arg == NULL, і _s_lwip_fin(NULL, …) нижче
+        читав би з адреси 0 у потоці lwIP (годинник Informer Clock UA, 28.10.2026). Клієнт уже закривається:
+        дані — звільнити, FIN — пропустити.  */
+    if(arg == NULL){
+        if(pb) pbuf_free(pb);
+        return ERR_OK;
+    }
     lwip_event_packet_t * e = (lwip_event_packet_t *)malloc(sizeof(lwip_event_packet_t));
     e->arg = arg;
     if(pb){
@@ -320,6 +332,10 @@ static int8_t _tcp_sent(void * arg, struct tcp_pcb * pcb, uint16_t len) {
 
 static void _tcp_error(void * arg, int8_t err) {
     //ets_printf("+E: 0x%08x\n", arg);
+    /*  lwIP звільняє pcb одразу після цього виклику (RST, тайм-аут, нестача пам'яті) і кличе нас під своїм замком.
+        Обнуляємо _pcb клієнта зараз, а не коли потік AsyncTCP дійде до події помилки: до того він ще розбере
+        дані з черги й підтвердив би їх по звільненій пам'яті (див. _pcb_alive).  */
+    if(arg) AsyncClient::_s_pcb_freed(arg);
     lwip_event_packet_t * e = (lwip_event_packet_t *)malloc(sizeof(lwip_event_packet_t));
     e->event = LWIP_TCP_ERROR;
     e->arg = arg;
@@ -366,6 +382,7 @@ static int8_t _tcp_accept(void * arg, AsyncClient * client) {
 typedef struct {
     struct tcpip_api_call_data call;
     tcp_pcb * pcb;
+    tcp_pcb ** pcbp;      /* поле _pcb клієнта: NULL у ньому — lwIP це з'єднання вже звільнив */
     int8_t closed_slot;
     int8_t err;
     union {
@@ -388,21 +405,30 @@ typedef struct {
     };
 } tcp_api_call_t;
 
+/*  Чи з'єднання клієнта ще те саме й живе. Виконується під замком ядра lwIP (tcpip_api_call) — як і _tcp_error,
+    що обнуляє _pcb клієнта, коли lwIP звільняє з'єднання (RST, тайм-аут). Тож перевірка не розминеться з RST:
+    раніше дані, що ще стояли в черзі потоку AsyncTCP, підтверджувались tcp_recved по звільненій пам'яті
+    (падіння 06.11.2026 під навантаженням: assert у tcp_update_rcv_ann_wnd ← tcp_recved ← AsyncClient::_recv).  */
+static inline bool _pcb_alive(const tcp_api_call_t * msg){
+    return msg->pcbp == NULL || *msg->pcbp == msg->pcb;
+}
+
 static err_t _tcp_output_api(struct tcpip_api_call_data *api_call_msg){
     tcp_api_call_t * msg = (tcp_api_call_t *)api_call_msg;
     msg->err = ERR_CONN;
-    if(msg->closed_slot == -1 || !_closed_slots[msg->closed_slot]) {
+    if(_pcb_alive(msg) && (msg->closed_slot == -1 || !_closed_slots[msg->closed_slot])) {
         msg->err = tcp_output(msg->pcb);
     }
     return msg->err;
 }
 
-static esp_err_t _tcp_output(tcp_pcb * pcb, int8_t closed_slot) {
+static esp_err_t _tcp_output(tcp_pcb * pcb, int8_t closed_slot, tcp_pcb ** pcbp = NULL) {
     if(!pcb){
         return ERR_CONN;
     }
     tcp_api_call_t msg;
     msg.pcb = pcb;
+    msg.pcbp = pcbp;
     msg.closed_slot = closed_slot;
     tcpip_api_call(_tcp_output_api, (struct tcpip_api_call_data*)&msg);
     return msg.err;
@@ -411,18 +437,19 @@ static esp_err_t _tcp_output(tcp_pcb * pcb, int8_t closed_slot) {
 static err_t _tcp_write_api(struct tcpip_api_call_data *api_call_msg){
     tcp_api_call_t * msg = (tcp_api_call_t *)api_call_msg;
     msg->err = ERR_CONN;
-    if(msg->closed_slot == -1 || !_closed_slots[msg->closed_slot]) {
+    if(_pcb_alive(msg) && (msg->closed_slot == -1 || !_closed_slots[msg->closed_slot])) {
         msg->err = tcp_write(msg->pcb, msg->write.data, msg->write.size, msg->write.apiflags);
     }
     return msg->err;
 }
 
-static esp_err_t _tcp_write(tcp_pcb * pcb, int8_t closed_slot, const char* data, size_t size, uint8_t apiflags) {
+static esp_err_t _tcp_write(tcp_pcb * pcb, int8_t closed_slot, const char* data, size_t size, uint8_t apiflags, tcp_pcb ** pcbp = NULL) {
     if(!pcb){
         return ERR_CONN;
     }
     tcp_api_call_t msg;
     msg.pcb = pcb;
+    msg.pcbp = pcbp;
     msg.closed_slot = closed_slot;
     msg.write.data = data;
     msg.write.size = size;
@@ -434,19 +461,20 @@ static esp_err_t _tcp_write(tcp_pcb * pcb, int8_t closed_slot, const char* data,
 static err_t _tcp_recved_api(struct tcpip_api_call_data *api_call_msg){
     tcp_api_call_t * msg = (tcp_api_call_t *)api_call_msg;
     msg->err = ERR_CONN;
-    if(msg->closed_slot == -1 || !_closed_slots[msg->closed_slot]) {
+    if(_pcb_alive(msg) && (msg->closed_slot == -1 || !_closed_slots[msg->closed_slot])) {
         msg->err = 0;
         tcp_recved(msg->pcb, msg->received);
     }
     return msg->err;
 }
 
-static esp_err_t _tcp_recved(tcp_pcb * pcb, int8_t closed_slot, size_t len) {
+static esp_err_t _tcp_recved(tcp_pcb * pcb, int8_t closed_slot, size_t len, tcp_pcb ** pcbp = NULL) {
     if(!pcb){
         return ERR_CONN;
     }
     tcp_api_call_t msg;
     msg.pcb = pcb;
+    msg.pcbp = pcbp;
     msg.closed_slot = closed_slot;
     msg.received = len;
     tcpip_api_call(_tcp_recved_api, (struct tcpip_api_call_data*)&msg);
@@ -456,18 +484,19 @@ static esp_err_t _tcp_recved(tcp_pcb * pcb, int8_t closed_slot, size_t len) {
 static err_t _tcp_close_api(struct tcpip_api_call_data *api_call_msg){
     tcp_api_call_t * msg = (tcp_api_call_t *)api_call_msg;
     msg->err = ERR_CONN;
-    if(msg->closed_slot == -1 || !_closed_slots[msg->closed_slot]) {
+    if(_pcb_alive(msg) && (msg->closed_slot == -1 || !_closed_slots[msg->closed_slot])) {
         msg->err = tcp_close(msg->pcb);
     }
     return msg->err;
 }
 
-static esp_err_t _tcp_close(tcp_pcb * pcb, int8_t closed_slot) {
+static esp_err_t _tcp_close(tcp_pcb * pcb, int8_t closed_slot, tcp_pcb ** pcbp = NULL) {
     if(!pcb){
         return ERR_CONN;
     }
     tcp_api_call_t msg;
     msg.pcb = pcb;
+    msg.pcbp = pcbp;
     msg.closed_slot = closed_slot;
     tcpip_api_call(_tcp_close_api, (struct tcpip_api_call_data*)&msg);
     return msg.err;
@@ -476,18 +505,19 @@ static esp_err_t _tcp_close(tcp_pcb * pcb, int8_t closed_slot) {
 static err_t _tcp_abort_api(struct tcpip_api_call_data *api_call_msg){
     tcp_api_call_t * msg = (tcp_api_call_t *)api_call_msg;
     msg->err = ERR_CONN;
-    if(msg->closed_slot == -1 || !_closed_slots[msg->closed_slot]) {
+    if(_pcb_alive(msg) && (msg->closed_slot == -1 || !_closed_slots[msg->closed_slot])) {
         tcp_abort(msg->pcb);
     }
     return msg->err;
 }
 
-static esp_err_t _tcp_abort(tcp_pcb * pcb, int8_t closed_slot) {
+static esp_err_t _tcp_abort(tcp_pcb * pcb, int8_t closed_slot, tcp_pcb ** pcbp = NULL) {
     if(!pcb){
         return ERR_CONN;
     }
     tcp_api_call_t msg;
     msg.pcb = pcb;
+    msg.pcbp = pcbp;
     msg.closed_slot = closed_slot;
     tcpip_api_call(_tcp_abort_api, (struct tcpip_api_call_data*)&msg);
     return msg.err;
@@ -745,22 +775,23 @@ bool AsyncClient::connect(const char* host, uint16_t port){
 
 void AsyncClient::close(bool now){
     if(_pcb){
-        _tcp_recved(_pcb, _closed_slot, _rx_ack_len);
+        _tcp_recved(_pcb, _closed_slot, _rx_ack_len, &_pcb);
     }
     _close();
 }
 
 int8_t AsyncClient::abort(){
     if(_pcb) {
-        _tcp_abort(_pcb, _closed_slot );
+        _tcp_abort(_pcb, _closed_slot, &_pcb);
         _pcb = NULL;
     }
     return ERR_ABRT;
 }
 
 size_t AsyncClient::space(){
-    if((_pcb != NULL) && (_pcb->state == 4)){
-        return tcp_sndbuf(_pcb);
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if((p != NULL) && (p->state == 4)){
+        return tcp_sndbuf(p);
     }
     return 0;
 }
@@ -775,7 +806,7 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
     }
     size_t will_send = (room < size) ? room : size;
     int8_t err = ERR_OK;
-    err = _tcp_write(_pcb, _closed_slot, data, will_send, apiflags);
+    err = _tcp_write(_pcb, _closed_slot, data, will_send, apiflags, &_pcb);
     if(err != ERR_OK) {
         return 0;
     }
@@ -784,7 +815,7 @@ size_t AsyncClient::add(const char* data, size_t size, uint8_t apiflags) {
 
 bool AsyncClient::send(){
     int8_t err = ERR_OK;
-    err = _tcp_output(_pcb, _closed_slot);
+    err = _tcp_output(_pcb, _closed_slot, &_pcb);
     if(err == ERR_OK){
         _pcb_busy = true;
         _pcb_sent_at = millis();
@@ -797,7 +828,7 @@ size_t AsyncClient::ack(size_t len){
     if(len > _rx_ack_len)
         len = _rx_ack_len;
     if(len){
-        _tcp_recved(_pcb, _closed_slot, len);
+        _tcp_recved(_pcb, _closed_slot, len, &_pcb);
     }
     _rx_ack_len -= len;
     return len;
@@ -807,7 +838,7 @@ void AsyncClient::ackPacket(struct pbuf * pb){
   if(!pb){
     return;
   }
-  _tcp_recved(_pcb, _closed_slot, pb->len);
+  _tcp_recved(_pcb, _closed_slot, pb->len, &_pcb);
   pbuf_free(pb);
 }
 
@@ -818,21 +849,26 @@ void AsyncClient::ackPacket(struct pbuf * pb){
 int8_t AsyncClient::_close(){
     //ets_printf("X: 0x%08x\n", (uint32_t)this);
     int8_t err = ERR_OK;
-    if(_pcb) {
-        //log_i("");
-        TCP_MUTEX_LOCK();
-        tcp_arg(_pcb, NULL);
-        tcp_sent(_pcb, NULL);
-        tcp_recv(_pcb, NULL);
-        tcp_err(_pcb, NULL);
-        tcp_poll(_pcb, NULL, 0);
-        TCP_MUTEX_UNLOCK();
-        _tcp_clear_events(this);
-        err = _tcp_close(_pcb, _closed_slot);
-        if(err != ERR_OK) {
-            err = abort();
+    /*  Усе — під замком ядра lwIP і з pcb, перечитаним під ним: раніше обробники знімались під замком, а
+        закривалось уже після нього — RST між цим звільнив би pcb під руками. Якщо lwIP його вже звільнив
+        (_pcb обнулив _tcp_error), нічого не робимо: клієнта прибере подія помилки, що стоїть у черзі.  */
+    TCP_MUTEX_LOCK();
+    tcp_pcb * p = _pcb;
+    if(p) {
+        tcp_arg(p, NULL);
+        tcp_sent(p, NULL);
+        tcp_recv(p, NULL);
+        tcp_err(p, NULL);
+        tcp_poll(p, NULL, 0);
+        if(tcp_close(p) != ERR_OK) {
+            tcp_abort(p);
+            err = ERR_ABRT;
         }
         _pcb = NULL;
+    }
+    TCP_MUTEX_UNLOCK();
+    if(p) {
+        _tcp_clear_events(this);
         if(_discard_cb) {
             _discard_cb(_discard_cb_arg, this);
         }
@@ -960,7 +996,7 @@ int8_t AsyncClient::_recv(tcp_pcb* pcb, pbuf* pb, int8_t err) {
             if(!_ack_pcb) {
                 _rx_ack_len += b->len;
             } else if(_pcb) {
-                _tcp_recved(_pcb, _closed_slot, b->len);
+                _tcp_recved(_pcb, _closed_slot, b->len, &_pcb);
             }
             pbuf_free(b);
         }
@@ -1023,10 +1059,11 @@ void AsyncClient::stop() {
 }
 
 bool AsyncClient::free(){
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return true;
     }
-    if(_pcb->state == 0 || _pcb->state > 4) {
+    if(p->state == 0 || p->state > 4) {
         return true;
     }
     return false;
@@ -1075,45 +1112,51 @@ void AsyncClient::setNoDelay(bool nodelay){
 }
 
 bool AsyncClient::getNoDelay(){
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return false;
     }
-    return tcp_nagle_disabled(_pcb);
+    return tcp_nagle_disabled(p);
 }
 
 uint16_t AsyncClient::getMss(){
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return tcp_mss(_pcb);
+    return tcp_mss(p);
 }
 
 uint32_t AsyncClient::getRemoteAddress() {
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return _pcb->remote_ip.u_addr.ip4.addr;
+    return p->remote_ip.u_addr.ip4.addr;
 }
 
 uint16_t AsyncClient::getRemotePort() {
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return _pcb->remote_port;
+    return p->remote_port;
 }
 
 uint32_t AsyncClient::getLocalAddress() {
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return _pcb->local_ip.u_addr.ip4.addr;
+    return p->local_ip.u_addr.ip4.addr;
 }
 
 uint16_t AsyncClient::getLocalPort() {
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return _pcb->local_port;
+    return p->local_port;
 }
 
 IPAddress AsyncClient::remoteIP() {
@@ -1133,45 +1176,51 @@ uint16_t AsyncClient::localPort() {
 }
 
 uint8_t AsyncClient::state() {
-    if(!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return 0;
     }
-    return _pcb->state;
+    return p->state;
 }
 
 bool AsyncClient::connected(){
-    if (!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return false;
     }
-    return _pcb->state == 4;
+    return p->state == 4;
 }
 
 bool AsyncClient::connecting(){
-    if (!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return false;
     }
-    return _pcb->state > 0 && _pcb->state < 4;
+    return p->state > 0 && p->state < 4;
 }
 
 bool AsyncClient::disconnecting(){
-    if (!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return false;
     }
-    return _pcb->state > 4 && _pcb->state < 10;
+    return p->state > 4 && p->state < 10;
 }
 
 bool AsyncClient::disconnected(){
-    if (!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return true;
     }
-    return _pcb->state == 0 || _pcb->state == 10;
+    return p->state == 0 || p->state == 10;
 }
 
 bool AsyncClient::freeable(){
-    if (!_pcb) {
+    tcp_pcb * p = _pcb;   /* один раз: потік lwIP може обнулити _pcb (_tcp_error) */
+    if(!p) {
         return true;
     }
-    return _pcb->state == 0 || _pcb->state > 4;
+    return p->state == 0 || p->state > 4;
 }
 
 bool AsyncClient::canSend(){
@@ -1244,6 +1293,10 @@ int8_t AsyncClient::_s_lwip_fin(void * arg, struct tcp_pcb * pcb, int8_t err) {
 
 int8_t AsyncClient::_s_sent(void * arg, struct tcp_pcb * pcb, uint16_t len) {
     return reinterpret_cast<AsyncClient*>(arg)->_sent(pcb, len);
+}
+
+void AsyncClient::_s_pcb_freed(void * arg) {
+    reinterpret_cast<AsyncClient*>(arg)->_pcb = NULL;
 }
 
 void AsyncClient::_s_error(void * arg, int8_t err) {
@@ -1342,6 +1395,11 @@ void AsyncServer::end(){
 //runs on LwIP thread
 int8_t AsyncServer::_accept(tcp_pcb* pcb, int8_t err){
     //ets_printf("+A: 0x%08x\n", pcb);
+    /*  Коли в lwIP скінчились місця для з'єднань, він кличе нас з pcb == NULL і err == ERR_MEM — далі
+        AsyncClient(NULL) читав би з адреси 0x1c (годинник, 30.10.2026). Нового з'єднання немає — нічого не робити.  */
+    if(pcb == NULL || err != ERR_OK){
+        return ERR_OK;
+    }
     if(_connect_cb){
         AsyncClient *c = new AsyncClient(pcb);
         if(c){

@@ -17,6 +17,8 @@ volatile bool yoVolTrace = false;   /* voltrace: кроки анімації п�
 namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "hal/spi_ll.h"
 #include "esp_core_dump.h"
+#include "nvs.h"
+#include <EEPROM.h>
 #include "driver/gpio.h"
 #include "driver/i2s.h"
 #include <WiFi.h>
@@ -1003,6 +1005,33 @@ void yodbgLoop(){
         }else Serial.println("COREDUMP не прочитався");
         if(cs) free(cs);
       }
+    }
+    else if(!strcmp(buf,"nvs")){
+      /*  Чи доходять налаштування до флешу (06.11.2026: після перезапуску з оновлення радіо взяло станцію й
+          гучність, яких власник уже не слухав). Лише читання: статистика NVS і звірка запису «eeprom» у флеші
+          з образом у пам'яті.  */
+      nvs_stats_t ns;
+      if(nvs_get_stats(NULL, &ns) == ESP_OK)
+        Serial.printf("NVS записів: зайнято %u, вільно %u, усього %u; просторів імен %u\n", (unsigned)ns.used_entries,
+                      (unsigned)ns.free_entries, (unsigned)ns.total_entries, (unsigned)ns.namespace_count);
+      Serial.printf("NVS налаштування у флеш: записано %lu, не вдалось %lu, чекає запису: %s\n", (unsigned long)config.eeOk,
+                    (unsigned long)config.eeFail, config.eeDirty() ? "так" : "ні");
+      nvs_handle_t h;
+      if(nvs_open("eeprom", NVS_READONLY, &h) == ESP_OK){
+        size_t sz = 0;
+        uint8_t* b = nvs_get_blob(h, "eeprom", NULL, &sz) == ESP_OK && sz ? (uint8_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM) : nullptr;
+        if(b && nvs_get_blob(h, "eeprom", b, &sz) == ESP_OK){
+          int diff = 0, first = -1;
+          for(size_t i = 0; i < sz && i < EEPROM.length(); i++) if(b[i] != EEPROM.read(i)){ diff++; if(first < 0) first = (int)i; }
+          uint16_t st = 0; uint8_t vol = 0;
+          memcpy(&st, b + config.getAddr(&config.store.lastStation), sizeof(st));
+          memcpy(&vol, b + config.getAddr(&config.store.volume), sizeof(vol));
+          Serial.printf("NVS «eeprom» %u Б: від пам'яті відрізняється байтів %d (перший %d); у флеші станція %u, гучність %u; "
+                        "у пам'яті %u, %u\n", (unsigned)sz, diff, first, st, vol, config.store.lastStation, config.store.volume);
+        }else Serial.println("NVS «eeprom»: запис не прочитався");
+        if(b) free(b);
+        nvs_close(h);
+      }else Serial.println("NVS «eeprom»: простору імен немає");
     }
     else if(!strcmp(buf,"coredumpclr")){ esp_core_dump_image_erase(); Serial.println("COREDUMP стерто"); }
     else if(!strncmp(buf,"m2cache",7)){

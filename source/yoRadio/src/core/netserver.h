@@ -87,7 +87,7 @@ const char emergency_form[] PROGMEM = R"~(
 struct nsRequestParams_t
 {
   requestType_e type;
-  uint8_t clientId;
+  uint32_t clientId;     /* номер клієнта веб-сокета росте з кожним підключенням — не uint8_t */
 };
 
 class NetServer {
@@ -100,11 +100,11 @@ class NetServer {
     NetServer() {};
     bool begin(bool quiet=false);
     void loop();
-    void requestOnChange(requestType_e request, uint8_t clientId);
+    void requestOnChange(requestType_e request, uint32_t clientId);
     void setRSSI(int val) { rssi = val; };
     int  getRSSI()        { return rssi; };
     void chunkedHtmlPage(const String& contentType, AsyncWebServerRequest *request, const char * path);
-    void onWsMessage(void *arg, uint8_t *data, size_t len, uint8_t clientId);
+    void onWsMessage(void *arg, uint8_t *data, size_t len, uint32_t clientId);
     bool irRecordEnable;
 #if IR_PIN!=255
     void irToWs(const char* protocol, uint64_t irvalue);
@@ -118,7 +118,7 @@ class NetServer {
     char wsBuf[BUFLEN*2];
     int rssi;
     uint32_t playerBufMax;
-    void getPlaylist(uint8_t clientId);
+    void getPlaylist(uint32_t clientId);
     bool importPlaylist();
     static size_t chunkedHtmlPageCallback(uint8_t* buffer, size_t maxLen, size_t index);
     void processQueue();

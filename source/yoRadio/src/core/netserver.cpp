@@ -72,6 +72,75 @@ char* updateError() {
   return netserver.nsBuf;
 }
 
+/*  Черга повідомлень веб-сторінці. AsyncWebSocket не захищений від кількох потоків: підключення, відключення й
+    підтвердження клієнтів обробляє потік AsyncTCP, а yoRadio розсилав стан (textAll/text) і прибирав зайвих
+    клієнтів (cleanupClients) просто з головного циклу. Коли сторінка перепідключалась, цикл міг дописати в
+    чергу клієнта, якого саме видаляли, — купа псувалась, і радіо падало пізніше, на звільненні чужого блоку
+    (дамп 06.11.2026: assert у multi_heap_free ← textAll ← NetServer::processQueue; так само падав годинник
+    Informer Clock UA 28.10). Тепер цикл лише кладе рядки сюди (wsOut), а надсилає їх і прибирає клієнтів
+    потік AsyncTCP — ws_async_hook.  */
+#define WS_BOX      8192                  /* кільце, Б (у PSRAM) */
+#define WS_MSG_MAX  1024                  /* найдовше повідомлення; wsBuf — BUFLEN*2 */
+static portMUX_TYPE s_boxMux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t* s_box = nullptr;          /* кільце + буфер одного повідомлення для потоку AsyncTCP */
+static uint32_t s_rd = 0, s_wr = 0;       /* лічильники байтів; зайнято = s_wr - s_rd */
+static uint32_t s_drop = 0;               /* відкинуто: черга повна */
+static volatile uint8_t s_wsN = 0;        /* клієнтів (пише потік AsyncTCP, цикл лише читає) */
+
+static void boxPut(const uint8_t* p, uint32_t n){    /* під s_boxMux */
+  for(uint32_t done = 0; done < n;){
+    const uint32_t at = (s_wr + done) % WS_BOX;
+    uint32_t k = n - done; if(k > WS_BOX - at) k = WS_BOX - at;
+    memcpy(s_box + at, p + done, k); done += k;
+  }
+  s_wr += n;
+}
+static void boxGet(uint8_t* p, uint32_t n){          /* під s_boxMux */
+  for(uint32_t done = 0; done < n;){
+    const uint32_t at = (s_rd + done) % WS_BOX;
+    uint32_t k = n - done; if(k > WS_BOX - at) k = WS_BOX - at;
+    memcpy(p + done, s_box + at, k); done += k;
+  }
+  s_rd += n;
+}
+/*  Покласти повідомлення в чергу (з будь-якого потоку): id 0 — усім, інакше — одному клієнту.  */
+static void wsOut(uint32_t id, const char* s){
+  const uint32_t n = strlen(s);
+  if(!s_box || n == 0 || n > WS_MSG_MAX || s_wsN == 0) return;
+  const uint8_t h[6] = { (uint8_t)id, (uint8_t)(id >> 8), (uint8_t)(id >> 16), (uint8_t)(id >> 24), (uint8_t)n, (uint8_t)(n >> 8) };
+  portENTER_CRITICAL(&s_boxMux);
+  if(WS_BOX - (s_wr - s_rd) >= n + 6){ boxPut(h, 6); boxPut((const uint8_t*)s, n); }
+  else s_drop++;
+  portEXIT_CRITICAL(&s_boxMux);
+}
+/*  Потік AsyncTCP: прибрати зайвих клієнтів і надіслати чергу. Кожне надсилання чекає потік lwIP, а той кладе
+    події в чергу цього потоку: коли в ній багато подій, спершу нехай їх розбере. За раз — не більше 8.
+    Без availableForWriteAll(): бібліотека вважає «повним» і клієнта, що вже відключається, — поки такий є в
+    списку, розсилка стояла (навантаження 06.11: за 10 хв 1789 підключень — жодної відповіді). Переповнену
+    чергу клієнта textAll/text і так оминають.  */
+void ws_async_hook(AsyncWebSocket* server){
+  static bool busy = false;
+  if(busy || !s_box) return;
+  busy = true;
+  server->cleanupClients();            /* у yoRadio — щоциклу з головного циклу */
+  s_wsN = server->count();
+  uint8_t* const msg = s_box + WS_BOX;
+  for(int k = 0; k < 8 && async_tcp_queue_waiting() <= 16; k++){
+    uint32_t id = 0, n = 0;
+    portENTER_CRITICAL(&s_boxMux);
+    if(s_wr - s_rd >= 6){
+      uint8_t h[6]; boxGet(h, 6);
+      id = h[0] | (uint32_t)h[1] << 8 | (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
+      n = h[4] | (uint32_t)h[5] << 8;
+      boxGet(msg, n);
+    }
+    portEXIT_CRITICAL(&s_boxMux);
+    if(n == 0) break;
+    if(id == 0) server->textAll((const char*)msg, n); else server->text(id, (const char*)msg, n);
+  }
+  busy = false;
+}
+
 bool NetServer::begin(bool quiet) {
   if(network.status==SDREADY) return true;
   if(!quiet) Serial.print("##[BOOT]#\tnetserver.begin\t");
@@ -80,6 +149,7 @@ bool NetServer::begin(bool quiet) {
   playerBufMax = psramInit()?300000:1600 * config.store.abuff;
   nsQueue = xQueueCreate( 20, sizeof( nsRequestParams_t ) );
   while(nsQueue==NULL){;}
+  if(!s_box) s_box = (uint8_t*)heap_caps_malloc(WS_BOX + WS_MSG_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
   /*  Сторінки yoRadio замінено нашою (app.js, app.css). Старі файли не
       лишаємо: відкрита колись вкладка чи кеш браузера показували б із них
@@ -178,7 +248,7 @@ void NetServer::processQueue(){
   if(nsQueue==NULL) return;
   nsRequestParams_t request;
   if(xQueueReceive(nsQueue, &request, NS_QUEUE_TICKS)){
-    uint8_t clientId = request.clientId;
+    uint32_t clientId = request.clientId;
     wsBuf[0]='\0';
     switch (request.type) {
       case PLAYLIST:        getPlaylist(clientId); break;
@@ -326,7 +396,7 @@ void NetServer::processQueue(){
       default:          break;
     }
     if (strlen(wsBuf) > 0) {
-      if (clientId == 0) { websocket.textAll(wsBuf); }else{ websocket.text(clientId, wsBuf); }
+      wsOut(clientId, wsBuf);
   #ifdef MQTT_ROOT_TOPIC
       if (clientId == 0 && (request.type == STATION || request.type == ITEM || request.type == TITLE || request.type == MODE)) mqttPublishStatus();
       if (clientId == 0 && request.type == VOLUME) mqttPublishVolume();
@@ -342,8 +412,7 @@ void NetServer::loop() {
     delay(100);
     ESP.restart();
   }
-  processQueue();
-  websocket.cleanupClients();
+  processQueue();                    /* зайвих клієнтів прибирає ws_async_hook */
   switch (importRequest) {
     case IMPL:    importPlaylist();  importRequest = IMDONE; break;
     case IMWIFI:  config.saveWifi(); importRequest = IMDONE; break;
@@ -356,17 +425,17 @@ void NetServer::loop() {
 void NetServer::irToWs(const char* protocol, uint64_t irvalue) {
   wsBuf[0]='\0';
   sprintf (wsBuf, "{\"ircode\": %llu, \"protocol\": \"%s\"}", irvalue, protocol);
-  websocket.textAll(wsBuf);
+  wsOut(0, wsBuf);
 }
 void NetServer::irValsToWs() {
   if (!irRecordEnable) return;
   wsBuf[0]='\0';
   sprintf (wsBuf, "{\"irvals\": [%llu, %llu, %llu]}", config.ircodes.irVals[config.irindex][0], config.ircodes.irVals[config.irindex][1], config.ircodes.irVals[config.irindex][2]);
-  websocket.textAll(wsBuf);
+  wsOut(0, wsBuf);
 }
 #endif
 
-void NetServer::onWsMessage(void *arg, uint8_t *data, size_t len, uint8_t clientId) {
+void NetServer::onWsMessage(void *arg, uint8_t *data, size_t len, uint32_t clientId) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     data[len] = 0;
@@ -406,9 +475,9 @@ void NetServer::onWsMessage(void *arg, uint8_t *data, size_t len, uint8_t client
   }
 }
 
-void NetServer::getPlaylist(uint8_t clientId) {
+void NetServer::getPlaylist(uint32_t clientId) {
   sprintf(nsBuf, "{\"file\": \"http://%s%s\"}", config.ipToStr(WiFi.localIP()), PLAYLIST_PATH);
-  if (clientId == 0) { websocket.textAll(nsBuf); } else { websocket.text(clientId, nsBuf); }
+  wsOut(clientId, nsBuf);
 }
 
 int NetServer::_readPlaylistLine(File &file, char * line, size_t size){
@@ -459,7 +528,7 @@ bool NetServer::importPlaylist() {
   return false;
 }
 
-void NetServer::requestOnChange(requestType_e request, uint8_t clientId) {
+void NetServer::requestOnChange(requestType_e request, uint32_t clientId) {
   if(nsQueue==NULL) return;
   nsRequestParams_t nsrequest;
   nsrequest.type = request;
@@ -575,8 +644,11 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
 
 void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
   switch (type) {
-    case WS_EVT_CONNECT: /*netserver.requestOnChange(STARTUP, client->id()); */if (config.store.audioinfo) Serial.printf("[WEBSOCKET] client #%lu connected from %s\n", client->id(), config.ipToStr(client->remoteIP())); break;
-    case WS_EVT_DISCONNECT: if (config.store.audioinfo) Serial.printf("[WEBSOCKET] client #%lu disconnected\n", client->id()); break;
+    case WS_EVT_CONNECT: s_wsN = server->count(); /*netserver.requestOnChange(STARTUP, client->id()); */if (config.store.audioinfo) Serial.printf("[WEBSOCKET] client #%lu connected from %s\n", client->id(), config.ipToStr(client->remoteIP())); break;
+    case WS_EVT_DISCONNECT:
+      s_wsN = server->count();
+      if(s_wsN == 0){ portENTER_CRITICAL(&s_boxMux); s_rd = s_wr; portEXIT_CRITICAL(&s_boxMux); }   /* нікому — не копити */
+      if (config.store.audioinfo) Serial.printf("[WEBSOCKET] client #%lu disconnected\n", client->id()); break;
     case WS_EVT_DATA: netserver.onWsMessage(arg, data, len, client->id()); break;
     case WS_EVT_PONG:
     case WS_EVT_ERROR:

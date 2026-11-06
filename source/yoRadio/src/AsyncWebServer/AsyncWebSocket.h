@@ -53,6 +53,11 @@ class AsyncWebSocketResponse;
 class AsyncWebSocketClient;
 class AsyncWebSocketControl;
 
+/*  Гачок потоку AsyncTCP: кличеться з опитування клієнта (≈ раз на 0,5 с) і після підтвердження. Визначає його
+    прошивка (core/netserver.cpp) — там розсилається черга повідомлень веб-сторінці: AsyncWebSocket не
+    захищений від кількох потоків, і розсилка з головного циклу псувала купу.  */
+void ws_async_hook(AsyncWebSocket *server) __attribute__((weak));
+
 typedef struct {
     /** Message type as defined by enum AwsFrameType.
      * Note: Applications will only see WS_TEXT and WS_BINARY.

@@ -272,9 +272,7 @@ bool Config::prepareForPlaying(uint16_t stationId){
   display.putRequest(NEWSTATION);
   display.putRequest(NEWMODE, PLAYER);
   netserver.requestOnChange(STATION, 0);
-  netserver.requestOnChange(MODE, 0);
-  netserver.loop();
-  netserver.loop();
+  netserver.requestOnChange(MODE, 0);   /* розбере потік екрана (див. setTitle) */
   if(store.smartstart!=2)
     setSmartStart(0);
   return true;
@@ -493,7 +491,7 @@ void Config::setIrBtn(int val){
   if (irindex < 0) saveIR();
 }
 #endif
-void Config::resetSystem(const char *val, uint8_t clientId){
+void Config::resetSystem(const char *val, uint32_t clientId){
   if (strcmp(val, "system") == 0) {
     saveValue(&store.smartstart, (uint8_t)2, false);
     saveValue(&store.audioinfo, false, false);
@@ -680,13 +678,13 @@ void Config::eepromLoop(){
   const uint32_t idle = millis() - _eeDirtyAt;
   if(idle < EEPROM_FLUSH_DELAY) return;
   if((player.isRunning() || player.extOn) && idle < EEPROM_PLAYING_DELAY) return;
-  EEPROM.commit();
+  if(EEPROM.commit()) eeOk++; else eeFail++;
   _eeDirty = false;
 }
 
 void Config::commitNow(){
   if(!_eeDirty) return;
-  EEPROM.commit();
+  if(EEPROM.commit()) eeOk++; else eeFail++;
   _eeDirty = false;
 }
 
@@ -739,8 +737,11 @@ void Config::setTitle(const char* title) {
   memset(config.station.title, 0, BUFLEN);
   strlcpy(config.station.title, title, BUFLEN);
   u8fix(config.station.title);
+  /*  Лише в чергу: розбирає її потік екрана (DspTask) раз на 10 мс. setTitle кличе й потік звуку (назва пісні з
+      потоку), і yoRadio розбирав чергу просто звідси — коли сторінка радіо засипала її запитами, потік звуку
+      стояв, доки кожен запит чекав місця в повній черзі (до 300 мс): навантаження 06.11 — «пауза звуку
+      2799/2948 мс» на зміні пісні. І чергу не можна розбирати з кількох потоків — спільні wsBuf і nsBuf.  */
   netserver.requestOnChange(TITLE, 0);
-  netserver.loop();
   display.putRequest(NEWTITLE);
 }
 

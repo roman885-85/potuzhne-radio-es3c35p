@@ -28,7 +28,7 @@ class MyNetwork {
     void pauseSta(bool on);          /* на час пошуку мереж звільняємо радіомодуль */
     uint8_t lostTries() const { return _reTry; }
   public:
-    void requestTimeSync(bool withTelnetOutput=false, uint8_t clientId=0);
+    void requestTimeSync(bool withTelnetOutput=false, uint32_t clientId=0);
     void requestWeatherSync();
     void setWifiParams();
     bool mdnsStart();                /* підняти mDNS; можна кликати повторно */

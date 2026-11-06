@@ -200,6 +200,10 @@ class Config {
     void markDirty(){ _eeDirty = true; _eeDirtyAt = millis(); }
     void eepromLoop();        /* з головного циклу */
     void commitNow();         /* перед перезавантаженням і сном */
+    /*  Записи налаштувань у флеш: невдачу EEPROM.commit() пише лише в журнал рівня «помилка», якого в цій
+        збірці немає, — рахуємо самі (консоль «nvs»).  */
+    uint32_t eeOk = 0, eeFail = 0;
+    bool eeDirty() const { return _eeDirty; }
     void setTone(int8_t bass, int8_t middle, int8_t trebble);
     void setBalance(int8_t balance);
     uint8_t setLastStation(uint16_t val);
@@ -263,7 +267,7 @@ class Config {
 #if IR_PIN!=255
     void setIrBtn(int val);
 #endif
-    void resetSystem(const char *val, uint8_t clientId);
+    void resetSystem(const char *val, uint32_t clientId);
     bool spiffsCleanup();
     void waitConnection();
     char * ipToStr(IPAddress ip);

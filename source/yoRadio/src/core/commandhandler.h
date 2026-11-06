@@ -3,7 +3,7 @@
 
 class CommandHandler {
 public:
-  bool exec(const char *command, const char *value, uint8_t cid=0);
+  bool exec(const char *command, const char *value, uint32_t cid=0);
 
 private:
   static bool strEquals(const char *a, const char *b) {

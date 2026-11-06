@@ -490,7 +490,7 @@ bool MyNetwork::mdnsStart(){
   return true;
 }
 
-void MyNetwork::requestTimeSync(bool withTelnetOutput, uint8_t clientId) {
+void MyNetwork::requestTimeSync(bool withTelnetOutput, uint32_t clientId) {
   if (withTelnetOutput) {
     char timeStringBuff[50];
     strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%dT%H:%M:%S", &timeinfo);

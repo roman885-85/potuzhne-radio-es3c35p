@@ -518,9 +518,11 @@ void AsyncWebSocketClient::_onAck(size_t len, uint32_t time){
   }
   _server->_cleanBuffers(); 
   _runQueue();
+  if(ws_async_hook) ws_async_hook(_server);   /* після підтвердження — наступні повідомлення черги прошивки */
 }
 
 void AsyncWebSocketClient::_onPoll(){
+  if(ws_async_hook) ws_async_hook(_server);   /* черга прошивки — лише з потоку AsyncTCP */
   if(_client->canSend() && (!_controlQueue.isEmpty() || !_messageQueue.isEmpty())){
     _runQueue();
   } else if(_keepAlivePeriod > 0 && _controlQueue.isEmpty() && _messageQueue.isEmpty() && (millis() - _lastMessageTime) >= _keepAlivePeriod){

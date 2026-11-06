@@ -14,7 +14,7 @@
 
 CommandHandler cmd;
 
-bool CommandHandler::exec(const char *command, const char *value, uint8_t cid) {
+bool CommandHandler::exec(const char *command, const char *value, uint32_t cid) {
   if (strEquals(command, "start"))    { player.sendCommand({PR_PLAY, config.lastStation()}); return true; }
   if (strEquals(command, "stop"))     { player.sendCommand({PR_STOP, 0}); return true; }
   if (strEquals(command, "toggle"))   { player.toggle(); return true; }

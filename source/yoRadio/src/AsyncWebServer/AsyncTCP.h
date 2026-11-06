@@ -57,14 +57,20 @@ extern "C" {
 #endif
 
 #ifndef XQUEUE_SIZE
-  //#define XQUEUE_SIZE     128  // (32)
-  #define XQUEUE_SIZE     32
+  /*  128 замість 32: потік lwIP кладе сюди події й чекає, коли черга повна, — а потік AsyncTCP тим часом
+      сам може чекати lwIP (надсилання). На годиннику Informer Clock UA під навантаженням (сотні
+      підключень WebSocket за 5 хв) це зупиняло обидва потоки; більша черга робить таке практично недосяжним.  */
+  #define XQUEUE_SIZE     128
 #endif
 #ifndef SEND_ASYNC_EVENT_DELAY
   //#define SEND_ASYNC_EVENT_DELAY  portMAX_DELAY
   #define SEND_ASYNC_EVENT_DELAY  pdMS_TO_TICKS(1000)
 #endif
 class AsyncClient;
+
+/*  Скільки подій чекає в черзі потоку AsyncTCP (0 — черги ще немає). Розсилка веб-сторінці (ws_async_hook,
+    core/netserver.cpp) притримує відправку, коли черга наповнюється.  */
+uint32_t async_tcp_queue_waiting();
 
 #define ASYNC_MAX_ACK_TIME 5000
 #define ASYNC_WRITE_FLAG_COPY 0x01 //will allocate new buffer to hold the data while sending (else will hold reference to the data given)
@@ -160,6 +166,7 @@ class AsyncClient {
     static int8_t _s_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
     static int8_t _s_lwip_fin(void *arg, struct tcp_pcb *tpcb, int8_t err);
     static void _s_error(void *arg, int8_t err);
+    static void _s_pcb_freed(void *arg);   /* з потоку lwIP: pcb клієнта вже звільнено (див. _tcp_error) */
     static int8_t _s_sent(void *arg, struct tcp_pcb *tpcb, uint16_t len);
     static int8_t _s_connected(void* arg, void* tpcb, int8_t err);
     static void _s_dns_found(const char *name, struct ip_addr *ipaddr, void *arg);
