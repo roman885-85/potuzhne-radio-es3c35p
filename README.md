@@ -23,7 +23,7 @@ Mac, — перенесене на більший екран і новий ко�
 <img src="media/es3c35p/ekvalaizer.png" width="420" alt="Еквалайзер">
 </p>
 
-> **Стан:** версія **1.0.1** — готові образи в [випусках](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases);
+> **Стан:** версія **1.0.2** — готові образи в [випусках](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases);
 > далі радіо оновлюється саме (Меню › Оновлення).
 
 ---

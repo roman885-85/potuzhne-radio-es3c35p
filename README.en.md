@@ -25,7 +25,7 @@ a cable, the radio has a **Wi-Fi debug console**: commands, log, screenshots and
 <img src="media/es3c35p/ekvalaizer.png" width="420" alt="Equalizer">
 </p>
 
-> **Status:** version **1.0.1** — ready images are in the [releases](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases);
+> **Status:** version **1.0.2** — ready images are in the [releases](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases);
 > after that the radio updates itself (Menu › Update).
 
 The radio's own interface is in Ukrainian or English (Menu › Settings › Language).
