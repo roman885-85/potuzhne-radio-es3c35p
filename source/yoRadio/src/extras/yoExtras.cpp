@@ -245,7 +245,7 @@ void YoExtras::_timeLoop(uint32_t now){
   if(now - tick < 1000) return;
   tick = now;
   if(network.status != CONNECTED || WiFi.status() != WL_CONNECTED){ netAt = 0; return; }
-  if(!netAt){ netAt = now | 1; kickAt = 0; }
+  if(!netAt){ netAt = now ? now : 1; kickAt = 0; }   /* не now|1: на 1 мс пізніше за now — різниця «мінус 1» */
   const time_t t = time(nullptr);
   if(t > 1700000000){
     if(!had){
@@ -259,9 +259,10 @@ void YoExtras::_timeLoop(uint32_t now){
   }
   had = false;
   if(now - netAt < 60000 || (kickAt && now - kickAt < 60000)) return;
-  kickAt = now | 1; kicks++;
-  Serial.printf("##TIME#\tчасу немає, у мережі %lu с — запускаю SNTP заново (%s)\n", (unsigned long)((now - netAt) / 1000), config.store.sntp1);
-  config.setTimeConf();
+  kickAt = now ? now : 1; kicks++;
+  config.ntpNextBackup();
+  Serial.printf("##TIME#\tчасу немає, у мережі %lu с — SNTP заново: %s, %s, запасний %s\n", (unsigned long)((now - netAt) / 1000),
+                config.store.sntp1, config.store.sntp2, config.ntpBackup());
 }
 
 void YoExtras::_wifiCheck(uint32_t now){

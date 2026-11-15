@@ -147,6 +147,14 @@ void Config::_setupVersion(){
       saveValue(&store.timeSyncInterval, (uint16_t)60);    //min
       saveValue(&store.timeSyncIntervalRTC, (uint16_t)24); //hours
       saveValue(&store.weatherSyncInterval, (uint16_t)30); // min
+      break;
+    case 5:
+      /*  Сервери часу: типові yoRadio (pool.ntp.org і російська зона 1.ru.pool.ntp.org) — на українські
+          (власник 15.11.2026). Свої сервери користувача не чіпаємо.  */
+      if(!store.sntp1[0] || !strcmp(store.sntp1, "pool.ntp.org")) saveValue(store.sntp1, "ua.pool.ntp.org", 35, false);
+      if(!store.sntp2[0] || !strcmp(store.sntp2, "ua.pool.ntp.org") || strstr(store.sntp2, "ru.pool.ntp.org"))
+        saveValue(store.sntp2, "1.ua.pool.ntp.org", 35, false);
+      break;
     default:
       break;
   }
@@ -530,8 +538,8 @@ void Config::resetSystem(const char *val, uint32_t clientId){
   if (strcmp(val, "timezone") == 0) {
     saveValue(&store.tzHour, (int8_t)2, false);          /* Київ, зимовий; літній час — сам */
     saveValue(&store.tzMin, (int8_t)0, false);
-    saveValue(store.sntp1, "pool.ntp.org", 35, false);
-    saveValue(store.sntp2, "ua.pool.ntp.org", 35);
+    saveValue(store.sntp1, "ua.pool.ntp.org", 35, false);
+    saveValue(store.sntp2, "1.ua.pool.ntp.org", 35);
     saveValue(&store.timeSyncInterval, (uint16_t)60);
     saveValue(&store.timeSyncIntervalRTC, (uint16_t)24);
     if(extras.s.dstMode != 1){ extras.s.dstMode = 1; extras.changed(); }
@@ -596,8 +604,8 @@ void Config::setDefaults() {
   store.dspon=true;
   store.brightness=100;
   store.contrast=55;
-  strlcpy(store.sntp1,"pool.ntp.org", 35);
-  strlcpy(store.sntp2,"ua.pool.ntp.org", 35);
+  strlcpy(store.sntp1,"ua.pool.ntp.org", 35);
+  strlcpy(store.sntp2,"1.ua.pool.ntp.org", 35);
   store.showweather=false;
   strlcpy(store.weatherlat,"55.7512", 10);
   strlcpy(store.weatherlon,"37.6184", 10);
@@ -1035,17 +1043,24 @@ void Config::applyTz(){
   tzset();
 }
 
+/*  Сервери часу. SNTP ядра тримає три (CONFIG_LWIP_SNTP_MAX_SERVERS) і сам переходить до наступного, коли сервер
+    мовчить: два — з налаштувань (типово українська зона пулу: ua і 1.ua — різні набори серверів), третій —
+    запасний з іншої мережі. Коли часу хвилину немає (YoExtras::_timeLoop), запасний міняється по колу. Самих
+    українських мало: 62.149.0.30 (ntp.time.in.ua, є й у зоні ua) 14.11.2026 кілька годин давав час із похибкою
+    12–24 год (годинник Informer Clock UA).  */
+static const char* const NTP_BACKUP[] = { "pool.ntp.org", "time.google.com", "time.cloudflare.com" };
+static uint8_t s_ntpBackup = 0;
+const char* Config::ntpBackup(){ return NTP_BACKUP[s_ntpBackup % (sizeof(NTP_BACKUP) / sizeof(NTP_BACKUP[0]))]; }
+void Config::ntpNextBackup(){ s_ntpBackup++; setTimeConf(); }
+
 void Config::setTimeConf(){
   char tz[48];
   tzString(tz, sizeof(tz), store.tzHour * 60 + store.tzMin, extras.s.dstMode == 1);
-  if(strlen(store.sntp1)>0 && strlen(store.sntp2)>0){
-    configTzTime(tz, store.sntp1, store.sntp2);
-  }else if(strlen(store.sntp1)>0){
-    configTzTime(tz, store.sntp1);
-  }else{
-    setenv("TZ", tz, 1);
-    tzset();
-  }
+  /*  SNTP пам'ятає вказівники, а не копії: store і NTP_BACKUP живуть увесь час роботи  */
+  const char* s1 = store.sntp1[0] ? store.sntp1 : ntpBackup();
+  const char* s2 = store.sntp2[0] ? store.sntp2 : nullptr;
+  if(s2) configTzTime(tz, s1, s2, s1 == ntpBackup() ? nullptr : ntpBackup());
+  else  configTzTime(tz, s1, s1 == ntpBackup() ? nullptr : ntpBackup());
 }
 
 bool Config::_readSsids() {

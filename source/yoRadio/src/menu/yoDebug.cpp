@@ -1038,9 +1038,10 @@ void yodbgLoop(){
     else if(!strcmp(buf,"sntp")){
       /*  стан синхронізації часу: сервери, статус SNTP, системний час  */
       const time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt);
-      Serial.printf("SNTP %s, статус %d, сервери: %s | %s; час %04d-%02d-%02d %02d:%02d:%02d (%s)\n",
+      Serial.printf("SNTP %s, статус %d, сервери: %s | %s | %s; час %04d-%02d-%02d %02d:%02d:%02d (%s)\n",
                     esp_sntp_enabled() ? "увімкнено" : "вимкнено", (int)sntp_get_sync_status(),
                     esp_sntp_getservername(0) ? esp_sntp_getservername(0) : "-", esp_sntp_getservername(1) ? esp_sntp_getservername(1) : "-",
+                    esp_sntp_getservername(2) ? esp_sntp_getservername(2) : "-",
                     lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec, t > 1700000000 ? "є" : "немає");
     }
     else if(!strcmp(buf,"timezero")){

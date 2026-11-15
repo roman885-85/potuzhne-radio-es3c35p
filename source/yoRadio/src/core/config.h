@@ -31,7 +31,7 @@
   #define ESP_ARDUINO_3 1
 #endif
 
-#define CONFIG_VERSION  5
+#define CONFIG_VERSION  6
 
 enum playMode_e      : uint8_t  { PM_WEB=0, PM_SDCARD=1 };
 
@@ -221,6 +221,8 @@ class Config {
     bool _readSsids();            /* читання /data/wifi.csv у ssids[] */
     bool saveWifi();
     void setTimeConf();
+    void ntpNextBackup();               /* часу немає — наступний запасний сервер і SNTP заново */
+    const char* ntpBackup();             /* третій сервер SNTP — запасний з іншої мережі */
     void applyTz();                     /* пояс (і літній час) — у системний годинник, без перезапуску SNTP */
     bool saveWifiFromNextion(const char* post);
     /*  правка списку відомих мереж без перезавантаження  */

@@ -25,9 +25,8 @@ a cable, the radio has a **Wi-Fi debug console**: commands, log, screenshots and
 <img src="media/es3c35p/ekvalaizer.png" width="420" alt="Equalizer">
 </p>
 
-> **Status:** version **1.0** — being verified on the board. There are no releases for this board yet: they will
-> appear here once everything is verified, and then the radio will update itself. Until then — flash a build from
-> source (see "Building").
+> **Status:** version **1.0.1** — ready images are in the [releases](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases);
+> after that the radio updates itself (Menu › Update).
 
 The radio's own interface is in Ukrainian or English (Menu › Settings › Language).
 
@@ -92,7 +91,7 @@ Every screen and the web page are described in detail in the main project's READ
 | Amplifier | FM8002E | SC8002B (enabled by GPIO1 low) |
 | Interface | 320×240 | the same, scaled ×4/3: fonts, buttons, spacing |
 | External DAC | on spare pins | on the board's own P2/P3 connectors, no soldering (see below) |
-| Releases | [potuzhne-radio](https://github.com/roman885-85/potuzhne-radio/releases) | this repository (none yet) |
+| Releases | [potuzhne-radio](https://github.com/roman885-85/potuzhne-radio/releases) | [this repository](https://github.com/roman885-85/potuzhne-radio-es3c35p/releases) |
 
 Both boards build from the same source tree (`source/yoRadio/myoptions.h`); `firmware/rebuild.sh` selects which.
 

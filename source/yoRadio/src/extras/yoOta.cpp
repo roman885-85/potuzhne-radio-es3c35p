@@ -18,11 +18,14 @@ YoOta ota;
   #define PR_REPO "roman885-85/potuzhne-radio"
 #endif
 static const char* const REPO = PR_REPO;
-/*  Прошивка — своя для кожної плати (PR_BOARD у myoptions.h). Сторінка радіо
-    однакова для обох, тож її файли лишились під старою назвою.  */
+/*  Прошивка — своя для кожної плати (PR_BOARD у myoptions.h). Сторінка радіо однакова для обох; у випусках
+    ES3C28P її файли під старою назвою, а tools/release.sh цього проєкту кладе їх з назвою плати — беремо будь-яку
+    (до 1.0.1 радіо шукало лише ES3C28P, і сторінка з випусків ES3C35P не оновлювалась).  */
 static const char* const A_FW  = "PotuzhneRadio-" PR_BOARD "-update.bin";
 static const char* const A_JS  = "PotuzhneRadio-ES3C28P-app.js.gz";
 static const char* const A_CSS = "PotuzhneRadio-ES3C28P-app.css.gz";
+static const char* const A_JS2  = "PotuzhneRadio-" PR_BOARD "-app.js.gz";
+static const char* const A_CSS2 = "PotuzhneRadio-" PR_BOARD "-app.css.gz";
 
 /*  «v1.4.0», «1.4», «1.4.0-beta.2»: числа по черзі; за рівних чисел випуск новіший за бету  */
 int YoOta::cmpVersion(const char* a, const char* b){
@@ -198,8 +201,8 @@ bool YoOta::_doCheck(){
       for(const char* k = p; k > buf + 7; k--) if(!memcmp(k - 7, "\"size\":", 7)){ s = k; break; }
       if(s) fwSize = strtoul(s, nullptr, 10);
     }
-    else if(!strcmp(name, A_JS)) strlcpy(js, u, sizeof(js));
-    else if(!strcmp(name, A_CSS)) strlcpy(css, u, sizeof(css));
+    else if(!strcmp(name, A_JS) || !strcmp(name, A_JS2)) strlcpy(js, u, sizeof(js));
+    else if(!strcmp(name, A_CSS) || !strcmp(name, A_CSS2)) strlcpy(css, u, sizeof(css));
     p = q;
   }
   char notes[640] = { 0 };
