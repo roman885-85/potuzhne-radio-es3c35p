@@ -1052,10 +1052,17 @@ static const char* const NTP_BACKUP[] = { "pool.ntp.org", "time.google.com", "ti
 static uint8_t s_ntpBackup = 0;
 const char* Config::ntpBackup(){ return NTP_BACKUP[s_ntpBackup % (sizeof(NTP_BACKUP) / sizeof(NTP_BACKUP[0]))]; }
 void Config::ntpNextBackup(){ s_ntpBackup++; setTimeConf(); }
+/*  перевірка (консоль «ntpfake»): SNTP лише до цього сервера, у налаштування не йде; порожній — знову з налаштувань  */
+static char s_ntpTest[48];
+void Config::ntpTest(const char* host){ strlcpy(s_ntpTest, host ? host : "", sizeof(s_ntpTest)); setTimeConf(); }
 
 void Config::setTimeConf(){
   char tz[48];
   tzString(tz, sizeof(tz), store.tzHour * 60 + store.tzMin, extras.s.dstMode == 1);
+  /*  У всі три місця: SNTP після перезапуску питає той самий номер сервера, що й до нього (sntp_current_server
+      lwIP не скидається), а місце без імені — за старою адресою. З одним «ntpfake» запит ішов до колишнього
+      pool.ntp.org, а не до підставного (15.11.2026).  */
+  if(s_ntpTest[0]){ configTzTime(tz, s_ntpTest, s_ntpTest, s_ntpTest); return; }
   /*  SNTP пам'ятає вказівники, а не копії: store і NTP_BACKUP живуть увесь час роботи  */
   const char* s1 = store.sntp1[0] ? store.sntp1 : ntpBackup();
   const char* s2 = store.sntp2[0] ? store.sntp2 : nullptr;

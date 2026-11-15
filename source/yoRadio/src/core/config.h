@@ -223,6 +223,7 @@ class Config {
     void setTimeConf();
     void ntpNextBackup();               /* часу немає — наступний запасний сервер і SNTP заново */
     const char* ntpBackup();             /* третій сервер SNTP — запасний з іншої мережі */
+    void ntpTest(const char* host);      /* перевірка: SNTP лише до host, не зберігається; nullptr — з налаштувань */
     void applyTz();                     /* пояс (і літній час) — у системний годинник, без перезапуску SNTP */
     bool saveWifiFromNextion(const char* post);
     /*  правка списку відомих мереж без перезавантаження  */

@@ -38,6 +38,7 @@ namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "../extras/yoExtras.h"
 #include "../extras/yoRecorder.h"
 #include "../extras/yoSermons.h"
+#include "../extras/yoNtpCheck.h"
 #include "../extras/yoLogos.h"
 #include "../extras/yoMic.h"
 #include "../extras/yoSfx.h"
@@ -1043,6 +1044,22 @@ void yodbgLoop(){
                     esp_sntp_getservername(0) ? esp_sntp_getservername(0) : "-", esp_sntp_getservername(1) ? esp_sntp_getservername(1) : "-",
                     esp_sntp_getservername(2) ? esp_sntp_getservername(2) : "-",
                     lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec, t > 1700000000 ? "є" : "немає");
+    }
+    else if(!strcmp(buf,"ntpcheck")){
+      /*  перевірка часу з мережі (extras/yoNtpCheck): лічильники й остання перевірка  */
+      yoNtp::status(Serial);
+    }
+    else if(!strncmp(buf,"ntpverify",9) && (buf[9] == 0 || buf[9] == ' ')){
+      /*  ntpverify <сервер> — друга думка лише від нього (напр. адреса, що не відповідає); без сервера — звичайний список  */
+      yoNtp::setVerifier(buf[9] == ' ' ? buf + 10 : nullptr);
+      yoNtp::status(Serial);
+    }
+    else if(!strncmp(buf,"ntpfake",7) && (buf[7] == 0 || buf[7] == ' ')){
+      /*  ntpfake <сервер> — SNTP лише до нього (напр. підставний сервер на Mac, tools/es3c35p/fakentp.py), у
+          налаштування не йде; без сервера — знову сервери з налаштувань. SNTP запускається заново одразу.  */
+      config.ntpTest(buf[7] == ' ' ? buf + 8 : nullptr);
+      Serial.printf("NTPFAKE SNTP: %s | %s | %s\n", esp_sntp_getservername(0) ? esp_sntp_getservername(0) : "-",
+                    esp_sntp_getservername(1) ? esp_sntp_getservername(1) : "-", esp_sntp_getservername(2) ? esp_sntp_getservername(2) : "-");
     }
     else if(!strcmp(buf,"timezero")){
       /*  перевірка відновлення часу, як після ввімкнення: системний годинник — на 1970, годинник екрана — порожній
