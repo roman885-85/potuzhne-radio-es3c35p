@@ -233,6 +233,37 @@ void YoExtras::_wifiFileGuard(uint32_t now){
 
 /*  Через кілька секунд після старту мережа вже або є, або плата пішла
     в точку доступу. Порівнюємо з тим, чого просили, і забуваємо запит.  */
+/*  ---------- час із мережі (SNTP) ----------
+    Годинника з батарейкою в радіо немає — час лише з мережі. SNTP запускається ще в Config::init, до Wi-Fi, і
+    застрягати ніде не повинен, але перевіряємо: мережа є, а часу хвилину немає — запускаємо SNTP заново, далі
+    раз на хвилину, доки час не з'явиться. Рядок «час із мережі» показує, за скільки після підключення він
+    з'явився (15.11.2026 «--:--» понад 35 хв мав іншу причину — TimeKeeper::_upClock).  */
+void YoExtras::_timeLoop(uint32_t now){
+  static uint32_t netAt = 0, kickAt = 0, tick = 0;
+  static uint16_t kicks = 0;
+  static bool had = false;
+  if(now - tick < 1000) return;
+  tick = now;
+  if(network.status != CONNECTED || WiFi.status() != WL_CONNECTED){ netAt = 0; return; }
+  if(!netAt){ netAt = now | 1; kickAt = 0; }
+  const time_t t = time(nullptr);
+  if(t > 1700000000){
+    if(!had){
+      had = true;
+      struct tm lt; localtime_r(&t, &lt);
+      Serial.printf("##TIME#\tчас із мережі: %02d:%02d:%02d %02d.%02d.%04d (за %lu с у мережі, перезапусків SNTP %u)\n",
+                    lt.tm_hour, lt.tm_min, lt.tm_sec, lt.tm_mday, lt.tm_mon + 1, lt.tm_year + 1900,
+                    (unsigned long)((now - netAt) / 1000), kicks);
+    }
+    return;
+  }
+  had = false;
+  if(now - netAt < 60000 || (kickAt && now - kickAt < 60000)) return;
+  kickAt = now | 1; kicks++;
+  Serial.printf("##TIME#\tчасу немає, у мережі %lu с — запускаю SNTP заново (%s)\n", (unsigned long)((now - netAt) / 1000), config.store.sntp1);
+  config.setTimeConf();
+}
+
 void YoExtras::_wifiCheck(uint32_t now){
   if(!_wpend[0] || now < 4000) return;
   if(network.status != CONNECTED && network.status != SOFT_AP) return;
@@ -397,6 +428,7 @@ void YoExtras::loop(){
   yoWebApiLoop();                    /* команди з веб-сторінки */
   _wifiCheck(now);
   _wifiFileGuard(now);
+  _timeLoop(now);
   /*  Під час звуку — лише після 5 хв без змін (запис NVS зупиняє ядра, див. Config::eepromLoop);
       решту запише тиша між станціями, сон чи перезапуск.  */
   if(_dirty && now - _dirtyMs > 3000 && (!(player.isRunning() || player.extOn) || now - _dirtyMs > 300000UL)){ _dirty = false; _save(); }

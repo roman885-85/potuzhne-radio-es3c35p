@@ -18,6 +18,8 @@ namespace m2 { extern volatile uint32_t yoRowDur, yoRowPos, yoRowN; }
 #include "hal/spi_ll.h"
 #include "esp_core_dump.h"
 #include "nvs.h"
+#include "esp_sntp.h"
+#include <sys/time.h>
 #include <EEPROM.h>
 #include "driver/gpio.h"
 #include "driver/i2s.h"
@@ -1032,6 +1034,21 @@ void yodbgLoop(){
         if(b) free(b);
         nvs_close(h);
       }else Serial.println("NVS «eeprom»: простору імен немає");
+    }
+    else if(!strcmp(buf,"sntp")){
+      /*  стан синхронізації часу: сервери, статус SNTP, системний час  */
+      const time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt);
+      Serial.printf("SNTP %s, статус %d, сервери: %s | %s; час %04d-%02d-%02d %02d:%02d:%02d (%s)\n",
+                    esp_sntp_enabled() ? "увімкнено" : "вимкнено", (int)sntp_get_sync_status(),
+                    esp_sntp_getservername(0) ? esp_sntp_getservername(0) : "-", esp_sntp_getservername(1) ? esp_sntp_getservername(1) : "-",
+                    lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec, t > 1700000000 ? "є" : "немає");
+    }
+    else if(!strcmp(buf,"timezero")){
+      /*  перевірка відновлення часу, як після ввімкнення: системний годинник — на 1970, годинник екрана — порожній
+          («--:--»); далі YoExtras::_timeLoop має запустити SNTP, а TimeKeeper::_upClock — узяти час, щойно він є  */
+      struct timeval tv = {0, 0}; settimeofday(&tv, nullptr);
+      memset(&network.timeinfo, 0, sizeof(network.timeinfo));
+      Serial.println("TIMEZERO: час скинуто на 1970 — чекаю, що SNTP поверне його (рядки ##TIME#)");
     }
     else if(!strcmp(buf,"coredumpclr")){ esp_core_dump_image_erase(); Serial.println("COREDUMP стерто"); }
     else if(!strncmp(buf,"m2cache",7)){

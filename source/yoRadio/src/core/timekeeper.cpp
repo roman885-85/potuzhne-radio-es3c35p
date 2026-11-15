@@ -179,13 +179,12 @@ void TimeKeeper::_upClock(){
 #if RTCSUPPORTED
   if(config.isRTCFound()) rtc.getTime(&network.timeinfo);
 #else
-  if(network.timeinfo.tm_year>100 || network.status == SDREADY) {
-    /*  Годинник — із системного часу (його ставить SNTP): з поясом і літнім часом
-        і без набігання. Колись тут лише додавали секунду до збереженого.  */
-    const time_t now = time(nullptr);
-    if(now > 1600000000) localtime_r(&now, &network.timeinfo);
-    else { network.timeinfo.tm_sec++; mktime(&network.timeinfo); }
-  }
+  /*  Годинник — із системного часу (його ставить SNTP): з поясом і літнім часом і без набігання. Щойно час
+      дійсний — одразу, а не лише коли timeTask уже раз його звірила: після ввімкнення вона пробує кілька разів
+      у перші ~30 с, а SNTP, що встиг пізніше, годину лишав на екрані «--:--» (15.11.2026).  */
+  const time_t now = time(nullptr);
+  if(now > 1600000000) localtime_r(&now, &network.timeinfo);
+  else if(network.timeinfo.tm_year>100 || network.status == SDREADY) { network.timeinfo.tm_sec++; mktime(&network.timeinfo); }
 #endif
   if(display.ready()) display.putRequest(CLOCK);
 }

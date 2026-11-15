@@ -276,6 +276,7 @@ class YoExtras {
 
     char     _wpend[33] = {0};
     void     _wifiCheck(uint32_t now);
+    void     _timeLoop(uint32_t now);     /* є мережа, а часу немає — SNTP заново */
     volatile uint8_t _pwrMode = 0;
     uint32_t _pwrAt = 0;
     void     _powerOff();
